@@ -22,7 +22,7 @@
 - **진행 중에도 사용자가 방향을 바꿀 수 있다.** Dots처럼 같은 비서에게 변경을 알리는 경험을 목표에 반영했다. 사용자가 특정 작업을 보류하면 Butler는 목록과 후속 작업을 갱신하고, 맡긴 범위 안에서 영향을 받는 사람과 에이전트에게 전달한다.
 - **수행 결과를 약속한 결과와 대조한다.** Grok Bot이 실행 에이전트의 검증 자료를 살피는 사례를 참고했다. 예를 들어 사용자가 두 서비스의 배포 결과를 부탁했고 한 서비스의 배포만 확인됐다면, Butler는 확인된 서비스만 완료로 표시하고 나머지 확인을 이어 간다.
 
-이 원칙은 [AI Butler의 목표](../intent/ai-butler.md)에, POS 배포 확인을 비롯한 적용 장면은 [요청 처리 사례](request-handling-cases.md)에 정리했다.
+이 판단은 [AI Butler의 목표](../intent/ai-butler.md)와 [요청 처리 원칙](../intent/request-handling-principles.md)에, POS 배포 확인을 비롯한 적용 장면은 [요청 처리 사례](request-handling-cases.md)에 정리했다.
 
 ## 설계에 참고할 내용
 
