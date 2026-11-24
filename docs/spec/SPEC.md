@@ -2,9 +2,9 @@
 
 ## 목적
 
-[capability map](capability-map.md)의 모든 모듈이 따르는 기술 스택, 명령, 디렉터리 구조, 코드 스타일, 테스트 전략, 경계를 정한다. 모듈별 스펙(`spec/SPEC-<module id>.md`)은 그 모듈의 목적과 계약, 완료 조건만 적고 나머지는 이 문서를 따른다.
+[capability map](capability-map.md)의 모든 모듈이 따르는 기술 스택, 명령, 디렉터리 구조, 코드 스타일, 테스트 전략, 경계를 정한다. 모듈별 스펙(`docs/spec/SPEC-<module id>.md`)은 그 모듈의 목적과 계약, 완료 조건만 적고 나머지는 이 문서를 따른다.
 
-제품의 목표는 [AI Butler의 목표](../docs/intent/ai-butler.md), 용어와 판단 기준은 [요청 처리 원칙](../docs/intent/request-handling-principles.md), 기획·개발·리뷰·검증의 진행 방식은 [CLAUDE.md](../CLAUDE.md)를 따른다.
+제품의 목표는 [AI Butler의 목표](../intent/ai-butler.md), 용어와 판단 기준은 [요청 처리 원칙](../intent/request-handling-principles.md), 기획·개발·리뷰·검증의 진행 방식은 [CLAUDE.md](../../CLAUDE.md)를 따른다.
 
 ## 기술 스택
 
@@ -36,7 +36,8 @@ src/<module id>/            → 모듈 하나의 소스. 폴더 이름은 capabi
 src/<module id>/index.ts    → 모듈의 공개 계약. 다른 모듈은 이 파일만 import한다
 src/<module id>/*.test.ts   → 그 모듈의 단위 테스트. 대상 파일 옆에 둔다
 tests/                      → 요청 처리 사례를 재현하는 시나리오 테스트. 한 모듈만 쓰는 시나리오도 여기에 둔다
-spec/                       → capability map, 공통 규약, 모듈별 스펙
+docs/spec/                  → capability map, 공통 규약, 모듈별 스펙
+docs/tasks/                 → 모듈별 구현 계획과 작업 목록
 docs/intent/                → 목표와 요청 처리 원칙
 docs/ideas/                 → 사례와 참고 자료
 ```
@@ -82,7 +83,7 @@ export function placeHold(db: LedgerDb, actor: Actor, input: HoldInput, clock: C
 
 - 단위 테스트는 대상 파일 옆에, 사례를 재현하는 시나리오 테스트는 `tests/`에 둔다.
 - 모듈 스펙의 완료 조건마다 그 조건을 확인하는 테스트가 하나 이상 있어야 한다. `npm run check` 통과처럼 명령의 결과가 곧 조건인 것은 예외다.
-- 시나리오 테스트는 [요청 처리 사례](../docs/ideas/request-handling-cases.md)를 재현한다. 첫 사례는 슬랙과 Jira에 걸친 CS팀 VOC 요청이다.
+- 시나리오 테스트는 [요청 처리 사례](../ideas/request-handling-cases.md)를 재현한다. 첫 사례는 슬랙과 Jira에 걸친 CS팀 VOC 요청이다.
 - 테스트는 네트워크를 쓰지 않는다. 채널과 모델은 가짜 구현으로 바꾼다. 저장소는 메모리 DB나 임시 폴더의 SQLite 파일을 쓴다.
 - 테스트 데이터는 지어낸 것만 쓴다. 실제 사내 대화, 티켓, 이름, 토큰을 넣지 않는다.
 
