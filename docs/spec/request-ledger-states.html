@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>request-ledger · 요청과 작업의 상태 변화</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #202f2b;
+      --muted: #4a6058;
+      --green: #195747;
+      --paper: #faf9f5;
+      --line: #bfcac0;
+      --work: #884b2c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 1rem/1.65 "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans CJK KR", sans-serif;
+      word-break: keep-all;
+      overflow-wrap: anywhere;
+    }
+    main { max-width: 1240px; margin: auto; padding: 44px clamp(16px, 4vw, 56px) 56px; }
+    header { border-top: 3px solid var(--green); padding-top: 20px; margin-bottom: 20px; }
+    h1, h2, p, figure, ul { margin: 0; }
+    h1 { font-size: clamp(1.9rem, 4vw, 3rem); letter-spacing: -.04em; line-height: 1.25; }
+    header p { color: var(--muted); margin-top: 12px; max-width: 56em; }
+    code { font: .92em ui-monospace, "SF Mono", Menlo, monospace; }
+
+    .summary { border: 1px solid var(--line); background: #fff; border-radius: 12px; padding: 14px 22px; margin-bottom: 24px; }
+    .summary strong { display: block; margin-bottom: 4px; }
+    .summary ul { padding-left: 1.2em; color: var(--muted); }
+
+    figure { border: 1px solid var(--line); border-radius: 12px; background: #fff; overflow: hidden; margin-top: 24px; }
+    figcaption { padding: 14px 22px; border-bottom: 1px solid var(--line); font-weight: 700; }
+    .figure-note { border-top: 1px solid var(--line); padding: 12px 22px; color: var(--muted); }
+    .scroll { overflow-x: auto; }
+    .diagram { display: block; width: 100%; min-width: 900px; }
+    .diagram text { fill: var(--ink); text-anchor: middle; }
+    .diagram .start { text-anchor: start; }
+    .diagram .end { text-anchor: end; }
+    .diagram .box { fill: #fafbf8; stroke: #a5b4a7; }
+    .diagram .closed { fill: #e8f1e9; stroke: #94ac99; }
+    .diagram .group { fill: #fcfcfa; stroke: #a5b4a7; }
+    .diagram .ending { fill: #faf0e8; stroke: #c9aa96; }
+    .diagram .group-title { font-size: 20px; font-weight: 700; text-anchor: start; }
+    .diagram .ghost { fill: #fff; stroke: #a5b4a7; stroke-dasharray: 6 5; }
+    .diagram .heading { font-size: 22px; font-weight: 700; }
+    .diagram .detail { font-size: 14px; fill: var(--muted); }
+    .diagram .label { font-size: 15px; font-weight: 600; fill: var(--green); }
+    .diagram .fn { font: 13px ui-monospace, "SF Mono", Menlo, monospace; fill: var(--muted); }
+    .route { fill: none; stroke: var(--green); stroke-width: 2; marker-end: url(#arrow); }
+    .both { marker-start: url(#arrow-back); }
+    .dashed { stroke-dasharray: 6 5; }
+    .plain { marker-end: none; }
+    .end .route { stroke: var(--work); marker-end: url(#work-arrow); }
+    .end .label { fill: var(--work); }
+
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-top: 1px solid #dce2da; }
+    thead th { border-top: 0; color: var(--muted); font-size: .93rem; font-weight: 600; }
+    tbody td:first-child, thead th:first-child { white-space: nowrap; }
+    td.num { width: 3em; color: var(--muted); font-variant-numeric: tabular-nums; }
+    td.none { color: var(--muted); }
+    tr.mark td:first-child { box-shadow: inset 3px 0 0 var(--work); }
+    .table-wrap { padding: 4px 8px; overflow-x: auto; }
+    .legend { display: flex; flex-wrap: wrap; gap: 6px 22px; padding: 10px 22px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: .93rem; }
+    .legend i { display: inline-block; width: 26px; height: 0; border-top: 3px solid var(--green); vertical-align: middle; margin-right: 8px; }
+    .legend i.copper { border-color: var(--work); }
+    .legend i.dash { border-top-style: dashed; }
+    footer { margin-top: 28px; color: var(--muted); }
+    footer a { color: var(--green); text-underline-offset: .2em; }
+    @media print {
+      main { max-width: none; padding: 0; }
+      figure { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>요청과 작업의 상태 변화</h1>
+      <p><code>request-ledger</code>의 요청과 작업이 어떤 쓰기로 어느 상태로 옮겨 가는지 그렸다. 요청의 상태는 접수(open), 진행 중(in process), 닫힘(done) 셋이고, 끝내기로 정한 요청은 진행 중인 채 사유 값이 붙는다. 화살표 아래의 영문은 그 쓰기를 하는 함수 이름이다. 규칙의 원문은 스펙의 "상태"와 "닫기" 절이다.</p>
+    </header>
+
+    <div class="summary">
+      <strong>앞선 초안에서 달라진 것</strong>
+      <ul>
+        <li>요청의 상태는 접수, 진행 중, 닫힘 셋이다. 접수와 진행 중은 따로 저장하지 않고 작업에서 계산한다. 닫힘 예정도 해결됨도 상태로 두지 않는다.</li>
+        <li>철회, 맡지 않음, 이관으로 끝내기로 정한 요청은 진행 중인 채 "끝내기로 한 사유" 값이 붙는다. 전달과 인수 확인은 이 값이 있는 동안에만 하나씩 쌓는다.</li>
+        <li>완료는 이 값을 쓰지 않는다. 진행은 작업으로 보이고, 필요한 확인이 모이면 한 번에 닫는다.</li>
+        <li>닫는 작업이라는 종류가 없어졌다. 알리기와 인수 확인은 보통 작업으로 더한다.</li>
+        <li>사용자의 결정이나 직접 확인이 든 요청은 비서가 되돌리지 못한다.</li>
+      </ul>
+    </div>
+
+    <figure>
+      <figcaption>요청의 상태</figcaption>
+      <div class="legend">
+        <span><i></i>쓰기로 일어나는 전이</span>
+        <span><i class="copper"></i>끝내기로 정한 요청에 딸린 전이</span>
+        <span><i class="dash"></i>저장하지 않고 작업에서 계산하는 전이</span>
+      </div>
+      <div class="scroll">
+      <svg class="diagram" viewBox="0 0 1120 590" role="img" aria-labelledby="req-title" aria-describedby="req-desc" xmlns="http://www.w3.org/2000/svg">
+        <title id="req-title">요청의 상태 전이</title>
+        <desc id="req-desc">요청은 등록하면 접수가 되고, 작업이 시작되면 진행 중이 된다. 진행 중인 요청은 사유와 모든 확인을 한 번에 내면 닫힌다. 철회, 맡지 않음, 이관으로 끝내기로 정한 요청은 진행 중인 채 전달과 인수 확인을 하나씩 채워 다 채워지면 닫히고, 사유를 거두면 보통의 진행 중으로 돌아간다. 닫힌 요청을 다시 열면 진행 중이 된다.</desc>
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" markerWidth="6" markerHeight="6" refX="9" refY="5" orient="auto">
+            <path fill="#195747" d="M0 0 10 5 0 10z"/>
+          </marker>
+          <marker id="arrow-back" viewBox="0 0 10 10" markerWidth="6" markerHeight="6" refX="1" refY="5" orient="auto">
+            <path fill="#195747" d="M10 0 0 5 10 10z"/>
+          </marker>
+          <marker id="work-arrow" viewBox="0 0 10 10" markerWidth="6" markerHeight="6" refX="9" refY="5" orient="auto">
+            <path fill="#884b2c" d="M0 0 10 5 0 10z"/>
+          </marker>
+        </defs>
+
+        <!-- 진행 중 묶음 -->
+        <rect class="group" x="350" y="100" width="460" height="290" rx="16"/>
+        <text class="group-title" x="372" y="136">진행 중</text>
+
+        <!-- 등록 → 접수 -->
+        <circle cx="16" cy="250" r="8" fill="#195747"/>
+        <path class="route" d="M26 250H124"/>
+        <text class="label" x="72" y="238">등록</text>
+        <text class="fn" x="72" y="270">createRequest</text>
+
+        <!-- 접수 → 진행 중 (계산) -->
+        <path class="route dashed" d="M275 250H349"/>
+        <text class="label" x="312" y="238">작업 시작</text>
+        <text class="fn" x="312" y="270">계산</text>
+
+        <!-- 닫힘 → 진행 중 -->
+        <path class="route" d="M1015 205V60H500V204"/>
+        <text class="label" x="760" y="48">다시 엶 · 끝내기로 한 사유는 지워짐</text>
+        <text class="fn" x="760" y="80">reopenRequest</text>
+
+        <!-- 접수, 진행 중 → 닫힘 (한 번에) -->
+        <path class="route plain" d="M235 295V440H450"/>
+        <path class="route" d="M450 295V440H1015V296"/>
+        <text class="label" x="735" y="430">사유와 모든 확인을 한 번에 냄 · 완료와 요청 아님은 이 길로만</text>
+        <text class="fn" x="735" y="460">closeRequest</text>
+
+        <g class="end">
+          <!-- 처리 중 → 끝내기로 정함 -->
+          <path class="route" d="M535 233H624"/>
+          <text class="label" x="580" y="221">사유를 정함</text>
+          <text class="fn" x="580" y="254">setEnding</text>
+
+          <!-- 끝내기로 정함 → 처리 중 -->
+          <path class="route" d="M625 269H536"/>
+          <text class="label" x="580" y="289">거둠</text>
+          <text class="fn" x="580" y="307">clearEnding</text>
+
+          <!-- 확인을 하나씩 채움 -->
+          <path class="route" d="M683 205C683 165 737 165 737 205"/>
+          <text class="label" x="680" y="136">전달 · 인수 확인을 하나씩 채움</text>
+          <text class="fn" x="710" y="155">confirmClosure</text>
+
+          <!-- 끝내기로 정함 → 닫힘 -->
+          <path class="route" d="M795 250H939"/>
+          <text class="label" x="876" y="238">다 채워지면 닫힘</text>
+          <text class="fn" x="876" y="270">confirmClosure</text>
+          <text class="fn" x="876" y="288">closeRequest</text>
+
+          <rect class="ending" x="625" y="205" width="170" height="90" rx="12"/>
+          <text class="heading" x="710" y="243">끝내기로 정함</text>
+          <text class="detail" x="710" y="270">철회 · 맡지 않음 · 이관</text>
+        </g>
+
+        <rect class="box" x="365" y="205" width="170" height="90" rx="12"/>
+        <text class="heading" x="450" y="243">처리 중</text>
+        <text class="detail" x="450" y="270">끝내기로 한 사유 없음</text>
+
+        <rect class="box" x="125" y="205" width="150" height="90" rx="12"/>
+        <text class="heading" x="200" y="243">접수</text>
+        <text class="detail" x="200" y="270">시작한 작업이 없음</text>
+
+        <rect class="closed" x="940" y="205" width="150" height="90" rx="12"/>
+        <text class="heading" x="1015" y="243">닫힘</text>
+        <text class="detail" x="1015" y="270">닫힌 이유가 값으로 남음</text>
+
+        <!-- 합치기와 나누기 -->
+        <path class="route" d="M145 295V504"/>
+        <text class="label end" x="133" y="400">다른 요청에 합침</text>
+        <text class="fn end" x="133" y="418">mergeRequests</text>
+        <path class="route" d="M185 295V541H289"/>
+        <text class="label" x="238" y="529">나눔</text>
+        <text class="fn" x="238" y="561">splitRequest</text>
+
+        <rect class="ghost" x="65" y="505" width="100" height="62" rx="12"/>
+        <text class="heading" x="115" y="544">합쳐짐</text>
+
+        <rect class="box" x="290" y="507" width="200" height="68" rx="12"/>
+        <text class="heading" x="390" y="536">새 요청</text>
+        <text class="detail" x="390" y="560">고른 작업이 옮겨 옴</text>
+      </svg>
+      </div>
+      <p class="figure-note">접수와 진행 중은 저장하지 않고 조회할 때 작업에서 계산한다. "처리 중"과 "끝내기로 정함"은 상태가 아니라, 진행 중인 요청에 끝내기로 한 사유 값이 있는지의 차이다. 접수인 요청도 사유를 정하면 진행 중이 된다. 사유를 거두거나 다시 연 요청은 작업의 상태에 따라 접수나 진행 중이 된다. 합치기와 나누기는 접수와 진행 중 어느 쪽에서도 하지만, 끝내기로 정한 요청은 합치거나 나눌 수 없고 작업을 옮길 수도 없다. 사유와 요청자, 받는 쪽을 바꾸려면 먼저 사유를 거두고, 거두면 쌓아 둔 확인은 변경 이력에만 남는다. 시간이 지났다고 저절로 닫히지 않는다.</p>
+    </figure>
+
+    <figure>
+      <figcaption>요청의 상태를 정하는 기준</figcaption>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>상태</th><th>코드</th><th>기준</th><th>저장</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>접수</td><td><code>open</code></td><td>닫히지 않았고, 시작한 작업이 없으며, 끝내기로 정하지도 않았다. 미정인 요청과 아직 작업을 달지 않은 요청도 여기다</td><td class="none">계산</td></tr>
+            <tr><td>진행 중</td><td><code>in_progress</code></td><td>닫히지 않았고, 상태가 진행 중이거나 대기이거나 완료인 작업이 하나라도 있다. 또는 끝내기로 정했다</td><td class="none">계산</td></tr>
+            <tr><td>닫힘</td><td><code>done</code></td><td>닫았다. 닫힌 이유(완료, 철회, 맡지 않음, 이관, 요청 아님)가 값으로 남는다</td><td>저장</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="figure-note">저장하는 것은 닫혔는지와 닫힌 이유, 끝내기로 한 사유뿐이다. 접수와 진행 중을 따로 쓰는 함수가 없으므로 작업의 상태와 어긋나지 않는다. 칸반보드에서 요청을 어느 열에 둘지도 이 기준을 쓴다.</p>
+    </figure>
+
+    <figure>
+      <figcaption>닫힌 이유마다 필요한 확인</figcaption>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>닫힌 이유</th><th>닫는 데 필요한 확인</th><th>닫는 길</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>완료</td><td>약속한 일이 이루어졌다. 알릴 사람마다 결과가 전달됐다</td><td>끝내기로 정하지 않은 채 모든 확인을 한 번에 내고 닫는다</td></tr>
+            <tr><td>요청 아님</td><td>사용자가 요청이 아니라고 정했다. 미정인 요청에만 쓴다</td><td>미정인 요청에서 바로 닫는다</td></tr>
+            <tr class="mark"><td>철회</td><td>요청자가 철회했다</td><td>반드시 끝내기로 정함을 거친다. 쌓을 확인이 없어 <code>closeRequest</code>로 닫는다</td></tr>
+            <tr class="mark"><td>맡지 않음</td><td>사용자가 맡지 않기로 정했다. 그 결정이 요청자에게 전달됐다</td><td>끝내기로 정한 뒤 전달 확인이 채워지면 닫힌다. 확인이 한 번에 모이면 바로 닫을 수도 있다</td></tr>
+            <tr class="mark"><td>이관</td><td>사용자가 받는 쪽을 정해 넘기기로 했다. 그 결정이 요청자에게 전달됐다. 받는 쪽이 인수했다</td><td>끝내기로 정한 뒤 전달과 인수 확인이 채워지면 닫힌다. 확인이 한 번에 모이면 바로 닫을 수도 있다</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="figure-note">비서는 기록으로만 확인을 채울 수 있고, 사용자는 어느 확인이든 기록 없이 직접 확인해 채울 수 있다. "정했다"는 확인은 사용자만 채운다. 완료의 확인은 미리 쌓아 두지 않는다. 한 번에 모두 내지 못한 닫기는 거부되고 아무것도 바뀌지 않는다.</p>
+    </figure>
+
+    <figure>
+      <figcaption>요청의 쓰기마다 누가 무엇으로 할 수 있나</figcaption>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>쓰기</th><th>함수</th><th>사용자</th><th>비서</th></tr>
+          </thead>
+          <tbody>
+            <tr class="mark"><td>끝내기로 정함</td><td><code>setEnding</code></td><td>어느 사유든 정한다. 이관이면 받는 쪽을 적는다</td><td>철회만, 철회한 기록을 달아서. 맡지 않음과 이관은 정할 수 없다</td></tr>
+            <tr class="mark"><td>확인을 채움</td><td><code>confirmClosure</code></td><td>전달이나 인수 확인 하나를 기록이나 직접 확인으로 채운다</td><td>확인 하나를 기록으로 채운다</td></tr>
+            <tr class="mark"><td>끝내기로 정한 요청을 닫음</td><td><code>confirmClosure</code>, <code>closeRequest</code></td><td>마지막 확인을 채우면 닫힌다. 철회는 바로 닫는다</td><td>마지막 확인을 기록으로 채우면 닫힌다. 철회는 바로 닫는다</td></tr>
+            <tr class="mark"><td>사유를 거둠</td><td><code>clearEnding</code></td><td>언제든 거둔다</td><td>기록으로 확인한 철회만, 그 뒤의 기록이 있을 때. 맡지 않음과 이관은 거둘 수 없다</td></tr>
+            <tr><td>한 번에 닫음</td><td><code>closeRequest</code></td><td>사유와 모든 확인을 한 번에 낸다. 요청 아님은 사용자만 정한다</td><td>완료만, 모든 확인을 기록으로 한 번에 낸다</td></tr>
+            <tr><td>다시 엶</td><td><code>reopenRequest</code></td><td>언제든 다시 연다</td><td>사용자의 결정이나 직접 확인이 들어 있지 않고, 닫힌 뒤의 기록이 있을 때만</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="figure-note">맡지 않음과 이관은 사용자의 결정이 들어 있으므로 비서가 거두거나 다시 열지 못한다. 어긋나는 기록이 나오면 비서는 확인할 사항으로 남겨 사용자에게 묻는다.</p>
+    </figure>
+
+    <figure>
+      <figcaption>작업의 상태</figcaption>
+      <div class="legend">
+        <span><i></i>상태를 옮기는 쓰기</span>
+        <span><i class="dash"></i>권한만 적혀 있고 함수는 정해지지 않은 전이</span>
+      </div>
+      <div class="scroll">
+      <svg class="diagram" viewBox="0 0 1120 320" role="img" aria-labelledby="task-title" aria-describedby="task-desc" xmlns="http://www.w3.org/2000/svg">
+        <title id="task-title">작업의 상태 전이</title>
+        <desc id="task-desc">끝나지 않은 작업은 할 일, 진행 중, 대기 사이를 어느 쪽으로든 옮긴다. 끝나면 완료가 되고, 하지 않기로 하면 사유와 함께 취소가 된다. 완료는 되돌릴 수 있지만 사용자가 표시한 완료는 사용자만 되돌린다.</desc>
+
+        <rect class="ghost" x="30" y="80" width="650" height="210" rx="14"/>
+        <text class="detail" x="355" y="110">끝나지 않은 작업</text>
+        <text class="fn" x="355" y="266">updateTask · 셋 사이는 어느 쪽으로든 옮김</text>
+
+        <path class="route both" d="M222 180H268"/>
+        <path class="route both" d="M442 180H488"/>
+
+        <rect class="box" x="50" y="140" width="170" height="80" rx="12"/>
+        <text class="heading" x="135" y="175">할 일</text>
+        <text class="detail" x="135" y="200">아직 시작하지 않음</text>
+
+        <rect class="box" x="270" y="140" width="170" height="80" rx="12"/>
+        <text class="heading" x="355" y="175">진행 중</text>
+        <text class="detail" x="355" y="200">담당이 하고 있음</text>
+
+        <rect class="box" x="490" y="140" width="170" height="80" rx="12"/>
+        <text class="heading" x="575" y="175">대기</text>
+        <text class="detail" x="575" y="200">대기 대상이 있어야 함</text>
+
+        <path class="route" d="M680 135H879"/>
+        <text class="label" x="780" y="123">끝남</text>
+        <text class="fn" x="780" y="155">completeTask</text>
+
+        <path class="route" d="M680 235H879"/>
+        <text class="label" x="780" y="223">하지 않기로 함</text>
+        <text class="fn" x="780" y="255">cancelTask · 사유</text>
+
+        <path class="route dashed" d="M980 95V45H355V79"/>
+        <text class="label" x="668" y="33">완료를 되돌림 · 사용자가 표시한 완료는 사용자만</text>
+
+        <rect class="closed" x="880" y="95" width="200" height="80" rx="12"/>
+        <text class="heading" x="980" y="130">완료</text>
+        <text class="detail" x="980" y="155">기록 확인 · 사용자 표시 구분</text>
+
+        <rect class="ghost" x="880" y="195" width="200" height="80" rx="12"/>
+        <text class="heading" x="980" y="230">취소</text>
+        <text class="detail" x="980" y="255">사유를 함께 적음</text>
+      </svg>
+      </div>
+      <p class="figure-note">비서는 근거 기록을 달아야 완료로 쓸 수 있고, 사용자는 근거 없이 끝났다고 표시할 수 있다. 취소한 작업을 되살리는 전이는 스펙에 없다. 보류는 상태가 아니라 상태 위에 얹는 표시여서, 보류 중에도 상태는 기록에 따라 바뀌고 보류를 풀면 그때의 상태가 드러난다.</p>
+    </figure>
+
+    <figure>
+      <figcaption>끝나지 않은 작업이 목록에 보이는 표시</figcaption>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th></th><th>위에서부터 먼저 맞는 조건</th><th>표시</th><th>차례</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="num">1</td><td>요청이 닫혔다</td><td>닫힌 요청의 남은 작업 <code>closed_remaining</code></td><td class="none">없음</td></tr>
+            <tr class="mark"><td class="num">2</td><td>요청을 끝내기로 정했고, 그 전부터 있던 작업이며, 계속하라는 지시가 없다</td><td>멈춰야 함 <code>must_stop</code></td><td class="none">없음</td></tr>
+            <tr><td class="num">3</td><td>작업이나 요청에 보류가 하나라도 남아 있다</td><td>보류 <code>on_hold</code></td><td class="none">없음</td></tr>
+            <tr><td class="num">4</td><td>먼저 끝나야 하는 작업이 취소됐다</td><td>선행 작업 취소됨 <code>predecessor_cancelled</code></td><td class="none">없음</td></tr>
+            <tr><td class="num">5</td><td>먼저 끝나야 하는 작업이 끝나지 않았다</td><td>선행 작업 대기 <code>predecessor_pending</code></td><td class="none">없음</td></tr>
+            <tr><td class="num">6</td><td>상태가 대기다</td><td>대기 <code>waiting</code></td><td>대기 대상의 주체</td></tr>
+            <tr><td class="num">7</td><td>상태가 할 일이나 진행 중이다</td><td>진행할 수 있음 <code>actionable</code></td><td>담당</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="figure-note">표시는 저장하지 않고 조회할 때 계산한다. 사용자가 작업의 차례를 직접 정했으면 4~7에서 계산한 차례 대신 그 값을 쓴다. 요청의 차례는 끝나지 않은 작업들의 차례를 모은 것이고, 사용자가 들어 있으면 내 차례인 요청이다. 닫히지 않은 요청에 끝나지 않은 작업이 없고 끝내기로 정하지도 않았으면 다음 작업 미정으로 드러낸다.</p>
+      <p class="figure-note">끝내기로 정한 뒤에 더한 작업(요청자에게 알리기, 인수 확인 받기)은 멈춰야 함이 아니라 보통 작업으로 보인다. 계속하라는 지시는 사용자만 걸고, 사유를 거두거나 요청을 닫으면 지워진다. 완료로 가는 요청에는 멈춰야 함이 붙지 않고, 남은 작업으로 진행이 보인다.</p>
+    </figure>
+
+    <footer><a href="SPEC-request-ledger.md">request-ledger 스펙 원문 읽기</a></footer>
+  </main>
+</body>
+</html>
