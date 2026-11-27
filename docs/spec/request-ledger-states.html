@@ -107,7 +107,7 @@
       <div class="scroll">
       <svg class="diagram" viewBox="0 0 1120 590" role="img" aria-labelledby="req-title" aria-describedby="req-desc" xmlns="http://www.w3.org/2000/svg">
         <title id="req-title">요청의 상태 전이</title>
-        <desc id="req-desc">요청은 등록하면 접수가 되고, 작업이 시작되면 진행 중이 된다. 진행 중인 요청은 사유와 모든 확인을 한 번에 내면 닫힌다. 철회, 맡지 않음, 이관으로 끝내기로 정한 요청은 진행 중인 채 전달과 인수 확인을 하나씩 채워 다 채워지면 닫히고, 사유를 거두면 보통의 진행 중으로 돌아간다. 닫힌 요청을 다시 열면 진행 중이 된다.</desc>
+        <desc id="req-desc">요청은 등록하면 접수가 되고, 작업이 시작되면 진행 중이 된다. 진행 중인 요청은 사유와 모든 확인을 한 번에 내면 닫힌다. 철회, 맡지 않음, 이관으로 끝내기로 정한 요청은 진행 중인 채 전달과 인수 확인을 하나씩 채워 다 채워지면 닫히고, 사유를 거두거나 닫힌 요청을 다시 열면 끝내기로 한 사유가 없는 요청이 되고, 작업의 상태에 따라 접수나 진행 중으로 다시 계산된다.</desc>
         <defs>
           <marker id="arrow" viewBox="0 0 10 10" markerWidth="6" markerHeight="6" refX="9" refY="5" orient="auto">
             <path fill="#195747" d="M0 0 10 5 0 10z"/>
@@ -137,7 +137,7 @@
 
         <!-- 닫힘 → 진행 중 -->
         <path class="route" d="M1015 205V60H500V204"/>
-        <text class="label" x="760" y="48">다시 엶 · 끝내기로 한 사유는 지워짐</text>
+        <text class="label" x="760" y="48">다시 엶 · 사유는 지워지고 상태는 작업에서 다시 계산</text>
         <text class="fn" x="760" y="80">reopenRequest</text>
 
         <!-- 접수, 진행 중 → 닫힘 (한 번에) -->
