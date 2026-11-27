@@ -65,6 +65,7 @@ export type HoldInput = {
   resumeCondition?: string;
 };
 
+/** 모듈 안의 함수다. `index.ts`가 내보내는 공개 함수는 주체를 첫 인자로 받고 db와 clock은 원장을 열 때 정한다. */
 /** 보류는 사용자의 지시다. 비서는 걸 수 없다. */
 export function placeHold(db: LedgerDb, actor: Actor, input: HoldInput, clock: Clock): Hold {
   if (actor.kind !== "user") {
