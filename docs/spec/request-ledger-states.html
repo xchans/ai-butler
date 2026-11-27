@@ -264,7 +264,7 @@
       <figcaption>작업의 상태</figcaption>
       <div class="legend">
         <span><i></i>상태를 옮기는 쓰기</span>
-        <span><i class="dash"></i>권한만 적혀 있고 함수는 정해지지 않은 전이</span>
+        <span><i class="dash"></i>되돌리는 전이</span>
       </div>
       <div class="scroll">
       <svg class="diagram" viewBox="0 0 1120 320" role="img" aria-labelledby="task-title" aria-describedby="task-desc" xmlns="http://www.w3.org/2000/svg">
@@ -299,7 +299,7 @@
         <text class="fn" x="780" y="255">cancelTask · 사유</text>
 
         <path class="route dashed" d="M980 95V45H355V79"/>
-        <text class="label" x="668" y="33">완료를 되돌림 · 사용자가 표시한 완료는 사용자만</text>
+        <text class="label" x="668" y="33">완료나 취소를 되돌림 · updateTask</text>
 
         <rect class="closed" x="880" y="95" width="200" height="80" rx="12"/>
         <text class="heading" x="980" y="130">완료</text>
@@ -310,7 +310,7 @@
         <text class="detail" x="980" y="255">사유를 함께 적음</text>
       </svg>
       </div>
-      <p class="figure-note">비서는 근거 기록을 달아야 완료로 쓸 수 있고, 사용자는 근거 없이 끝났다고 표시할 수 있다. 취소한 작업을 되살리는 전이는 스펙에 없다. 보류는 상태가 아니라 상태 위에 얹는 표시여서, 보류 중에도 상태는 기록에 따라 바뀌고 보류를 풀면 그때의 상태가 드러난다.</p>
+      <p class="figure-note">비서는 근거 기록을 달아야 완료로 쓸 수 있고, 사용자는 근거 없이 끝났다고 표시할 수 있다. 완료나 취소인 작업은 다른 상태로 되돌릴 수 있고, 사용자가 표시한 완료와 사용자가 취소한 작업은 사용자만 되돌린다. 보류는 상태가 아니라 상태 위에 얹는 표시여서, 보류 중에도 상태는 기록에 따라 바뀌고 보류를 풀면 그때의 상태가 드러난다.</p>
     </figure>
 
     <figure>
