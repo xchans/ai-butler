@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>업무 목록 · 칸반보드 목업</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #202f2b;
+      --muted: #4a6058;
+      --green: #195747;
+      --paper: #faf9f5;
+      --line: #bfcac0;
+      --soft: #dce2da;
+      --work: #884b2c;
+      --work-bg: #faf0e8;
+      --work-line: #c9aa96;
+      --done-bg: #e8f1e9;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 1rem/1.6 "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans CJK KR", sans-serif;
+      word-break: keep-all;
+      overflow-wrap: anywhere;
+    }
+    main { max-width: 1680px; margin: auto; padding: 36px clamp(16px, 3vw, 40px) 56px; }
+    header { border-top: 3px solid var(--green); padding-top: 18px; margin-bottom: 18px; }
+    h1, h2, h3, p, ul { margin: 0; }
+    h1 { font-size: clamp(1.7rem, 3.4vw, 2.5rem); letter-spacing: -.04em; line-height: 1.25; }
+    header p { color: var(--muted); margin-top: 8px; max-width: 60em; }
+    code { font: .9em ui-monospace, "SF Mono", Menlo, monospace; }
+
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; margin-bottom: 16px; }
+    .views { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; background: #fff; }
+    .views span { padding: 6px 16px; font-size: .93rem; color: var(--muted); }
+    .views .on { background: var(--green); color: #fff; font-weight: 700; }
+    .filter { display: inline-flex; gap: 8px; align-items: center; font-size: .95rem; cursor: pointer; }
+    .filter input { width: 18px; height: 18px; accent-color: var(--green); }
+    .hint { color: var(--muted); font-size: .9rem; margin-left: auto; }
+
+    .board-scroll { overflow-x: auto; }
+    .board { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 3fr) minmax(0, 1fr); gap: 16px; align-items: start; min-width: 0; }
+    .group { border: 1px solid var(--line); border-radius: 16px; padding: 10px; background: #fff; }
+    .group > h2 { display: flex; align-items: baseline; gap: 8px; font-size: 1.1rem; padding: 2px 8px 10px; }
+    .group > h2 small { font-size: .85rem; font-weight: 400; color: var(--muted); }
+    .group > h2 .count { margin-left: auto; font-size: .9rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .group-columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: start; }
+    .group .column > h2 { font-size: 1rem; }
+    .column { background: #f1f2ec; border: 1px solid var(--soft); border-radius: 14px; padding: 12px; }
+    .column > h2 { display: flex; align-items: baseline; gap: 8px; font-size: 1.1rem; padding: 2px 6px 10px; }
+    .column > h2 small { font-size: .85rem; font-weight: 400; color: var(--muted); }
+    .column > h2 .count { margin-left: auto; font-size: .9rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .cards { display: grid; gap: 10px; }
+
+    .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+    .card summary { list-style: none; cursor: pointer; padding: 12px 14px; display: grid; gap: 8px; }
+    .card summary::-webkit-details-marker { display: none; }
+    .card summary:focus-visible { outline: 2px solid var(--green); outline-offset: -2px; border-radius: 12px; }
+    .card h3 { font-size: 1rem; line-height: 1.4; }
+    .next { font-weight: 600; line-height: 1.45; color: var(--green); }
+    .meta { color: var(--muted); font-size: .88rem; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { font-size: .8rem; line-height: 1; padding: 5px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); background: #fff; white-space: nowrap; }
+    .chip.mine { background: var(--green); border-color: var(--green); color: #fff; font-weight: 700; }
+    .chip.high { border-color: var(--work-line); color: var(--work); background: var(--work-bg); font-weight: 600; }
+    .chip.hold { background: #eceeea; }
+    .chip.agent { border-color: var(--green); color: var(--green); background: var(--done-bg); font-weight: 600; }
+    .chip.undecided { border-style: dashed; }
+    .chip.ask { border-color: var(--green); color: var(--green); }
+    .chip.reason { background: var(--done-bg); border-color: #94ac99; color: var(--green); font-weight: 600; }
+    .progress { display: flex; align-items: center; gap: 8px; font-size: .85rem; color: var(--muted); }
+    .bar { flex: 1; height: 6px; border-radius: 3px; background: var(--soft); overflow: hidden; }
+    .bar i { display: block; height: 100%; background: var(--green); }
+    .ending { background: var(--work-bg); border: 1px solid var(--work-line); border-radius: 8px; padding: 7px 10px; font-size: .88rem; color: var(--work); display: flex; justify-content: space-between; gap: 10px; }
+    .ending b { font-weight: 700; }
+    .ending span:last-child { white-space: nowrap; }
+    .card.is-ending { border-color: var(--work-line); box-shadow: inset 3px 0 0 var(--work); }
+
+    .tasks { border-top: 1px solid var(--soft); padding: 8px 14px 12px; display: grid; gap: 6px; }
+    .task { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: baseline; font-size: .88rem; }
+    .task .mark { width: 1.2em; text-align: center; color: var(--muted); }
+    .task.done .name { color: var(--muted); text-decoration: line-through; }
+    .task .who { color: var(--muted); display: inline-block; }
+    .state { font-size: .76rem; padding: 3px 7px; border-radius: 6px; background: #eef1ec; color: var(--muted); white-space: nowrap; }
+    .state.go { background: var(--done-bg); color: var(--green); font-weight: 600; }
+    .state.stop { background: var(--work-bg); color: var(--work); font-weight: 600; }
+    .confirm { font-size: .85rem; color: var(--muted); }
+    .confirm b { color: var(--ink); font-weight: 600; }
+
+    .column.closed .card { background: #fbfcfa; }
+    .column.closed .card h3 { font-weight: 600; color: var(--muted); }
+
+    .only-mine .card:not([data-mine]) { opacity: .28; }
+
+    .notes { margin-top: 28px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 22px; }
+    .notes article { border-top: 2px solid var(--line); padding-top: 12px; }
+    .notes h3 { font-size: 1.02rem; margin-bottom: 6px; }
+    .notes p { color: var(--muted); font-size: .95rem; }
+    footer { margin-top: 26px; color: var(--muted); font-size: .93rem; }
+    footer a { color: var(--green); text-underline-offset: .2em; }
+
+    @media (max-width: 1200px) {
+      .board { grid-template-columns: 1fr; min-width: 0; }
+      .group-columns { grid-template-columns: 1fr; }
+      .notes { grid-template-columns: 1fr; gap: 16px; }
+      .hint { margin-left: 0; width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>업무 목록 · 칸반보드 목업</h1>
+      <p>카드 한 장이 요청 하나다. 끝난 일과 다음 차례를 먼저 보고, 필요한 카드만 열어 담당·결정·근거를 확인한다. 요청과 기록은 모두 가상 사례이며 칸반은 전체 목록을 다른 방식으로 보는 후속 화면 구상이다.</p>
+    </header>
+
+    <div class="toolbar">
+      <div class="views" aria-label="보기 전환(목업)">
+        <span>전체 목록</span><span class="on">칸반보드</span><span>작업 그래프</span>
+      </div>
+      <label class="filter"><input type="checkbox" id="mine-toggle"> 내 차례만 강조</label>
+      <span class="hint">카드를 열면 작업과 확인 근거를 볼 수 있다</span>
+    </div>
+
+    <div class="board-scroll">
+    <div class="board" id="board">
+      <!-- 접수 -->
+      <section class="column">
+        <h2>접수 <small>시작한 작업이 없음</small><span class="count">3</span></h2>
+        <div class="cards">
+          <details class="card" data-mine>
+            <summary>
+              <h3>지난달 주문 내역 엑셀로 추출</h3>
+                  <p class="next">추출 전, 대상 주문 범위를 내가 정할 차례</p>
+              <div class="meta">정산팀 김하늘 · 기한 11월 28일</div>
+              <div class="chips"><span class="chip mine">내 차례</span><span class="chip">긴급도 보통</span><span class="chip">중요도 보통</span></div>
+              <div class="progress"><span>작업 0/2</span><span class="bar"><i style="width:0%"></i></span></div>
+            </summary>
+            <div class="tasks">
+              <div class="task"><span class="mark">○</span><span class="name">추출 조건 확인 <span class="who">· 나</span></span><span class="state go">진행할 수 있음</span></div>
+              <div class="task"><span class="mark">○</span><span class="name">엑셀 전달 <span class="who">· 나</span></span><span class="state">선행 작업 대기</span></div>
+            </div>
+          </details>
+
+          <details class="card">
+            <summary>
+              <h3>신규 쿠폰 정책 적용 범위 문의</h3>
+                  <p class="next">담당 미정 · 비서가 내게 확인 요청</p>
+              <div class="meta">마케팅팀 채널 · 기한 없음</div>
+              <div class="chips"><span class="chip undecided">미정</span><span class="chip ask">확인할 사항 1</span></div>
+              <div class="progress"><span>작업 없음</span></div>
+            </summary>
+            <div class="tasks">
+              <div class="confirm"><b>질문</b> 대화에서 짚은 마케팅팀 스레드에 담당자가 없습니다. 이 요청을 맡으시나요?</div>
+            </div>
+          </details>
+
+          <details class="card">
+            <summary>
+              <h3>야간 배치 실패 알림 확인</h3>
+                  <p class="next">대화에 기록 연결 · 다음 작업 미정</p>
+              <div class="meta">대화에서 짚은 운영 알림 · 기한 없음</div>
+              <div class="chips"><span class="chip ask">다음 작업 미정</span><span class="chip">긴급도 낮음</span></div>
+              <div class="progress"><span>작업 없음</span></div>
+            </summary>
+            <div class="tasks">
+              <div class="confirm">끝나지 않은 작업이 없습니다. 누가 무엇을 할지 정해지지 않았습니다.</div>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <!-- 진행 중 -->
+      <div class="group">
+        <h2>진행 중 <small>작업이 시작됐거나 끝내기로 정함</small><span class="count">7</span></h2>
+        <div class="group-columns">
+          <section class="column">
+            <h2>내 할 일 <small>내 차례인 작업이 있음</small><span class="count">3</span></h2>
+            <div class="cards">
+              <details class="card" data-mine>
+                <summary>
+                  <h3>결제 중복 건 데이터 수정 (CS팀 VOC)</h3>
+                  <p class="next">데이터 수정 확인 · 내가 CS팀에 회신할 차례</p>
+                  <div class="meta">CS팀 이서준 · 기한 11월 26일</div>
+                  <div class="chips"><span class="chip mine">내 차례</span><span class="chip high">긴급도 높음</span><span class="chip">중요도 높음</span></div>
+                  <div class="progress"><span>작업 2/3</span><span class="bar"><i style="width:66%"></i></span></div>
+                </summary>
+                <div class="tasks">
+                  <p class="confirm"><b>약속한 결과</b> 중복 데이터를 바로잡고 원래 Slack 스레드에 원인과 조치 결과를 답한다.</p>
+                  <p class="confirm"><b>연결한 기록</b> 대화에서 짚은 Slack #cs-help 스레드와 Jira PAY-218. 비서가 회신까지 변경을 따라간다.</p>
+                  <p class="confirm"><b>결정 이력</b> 09:10 대화에서 원인 조사 시작을 알림 → 10:25 목록에서 “회신은 내가 할게”라고 답함. 비서는 회신 자료를 준비하고 사용자 차례로 표시했다.</p>
+                  <p class="confirm"><b>회신 자료</b> Jira PAY-218의 10:40 조치 기록에서 중복 2건 정정 확인. 원래 스레드에는 결과 회신이 남았다.</p>
+                  <div class="task done"><span class="mark">✓</span><span class="name">원인 조사 <span class="who">· 나</span></span><span class="state">기록으로 확인</span></div>
+                  <div class="task done"><span class="mark">✓</span><span class="name">데이터 변경 <span class="who">· 나</span></span><span class="state">기록으로 확인</span></div>
+                  <div class="task"><span class="mark">○</span><span class="name">CS팀에 결과 회신 <span class="who">· 나</span></span><span class="state go">진행할 수 있음</span></div>
+                </div>
+              </details>
+
+              <details class="card is-ending" data-mine>
+                <summary>
+                  <h3>사내 설문 도구 도입 검토</h3>
+                  <div class="meta">인사팀 한지우 · 기한 없음</div>
+                  <div class="ending"><span><b>맡지 않기로 결정</b> · 요청자에게 알리기 남음</span><span>확인 0/1</span></div>
+                  <div class="chips"><span class="chip mine">내 차례</span><span class="chip">긴급도 낮음</span></div>
+                </summary>
+                <div class="tasks">
+                  <div class="confirm"><b>남은 확인</b> 그 결정이 요청자에게 전달됨</div>
+                  <div class="task"><span class="mark">○</span><span class="name">도구 후보 비교 <span class="who">· 나</span></span><span class="state stop">멈춰야 함</span></div>
+                  <div class="task"><span class="mark">○</span><span class="name">인사팀에 알리기 <span class="who">· 나</span></span><span class="state go">진행할 수 있음</span></div>
+                </div>
+              </details>
+
+              <details class="card is-ending" data-mine>
+                <summary>
+                  <h3>로그 보관 기간 연장 검토</h3>
+                  <p class="next">운영팀 인수 대기 중에도 용량 조사는 계속</p>
+                  <div class="meta">보안팀 정민재 · 기한 12월 5일</div>
+                  <div class="ending"><span><b>이관 결정</b> · 운영팀 인수 대기</span><span>확인 1/2</span></div>
+                  <div class="chips"><span class="chip mine">내 차례 · 용량 조사</span><span class="chip">긴급도 보통</span></div>
+                </summary>
+                <div class="tasks">
+                  <div class="confirm"><b>채운 확인</b> 요청자에게 전달됨 (Slack 기록) · <b>남은 확인</b> 운영팀이 인수함</div>
+                  <div class="task"><span class="mark">○</span><span class="name">보관 비용 산정 <span class="who">· 나</span></span><span class="state stop">멈춰야 함</span></div>
+                  <div class="task"><span class="mark">◔</span><span class="name">저장소 용량 조사 <span class="who">· 나</span></span><span class="state go">진행할 수 있음 · 계속</span></div>
+                  <div class="task done"><span class="mark">✓</span><span class="name">보안팀에 이관 알리기 <span class="who">· 나</span></span><span class="state">기록으로 확인</span></div>
+                  <div class="task"><span class="mark">◔</span><span class="name">운영팀 인수 확인 받기 <span class="who">· 나 → 운영팀</span></span><span class="state">대기</span></div>
+                </div>
+              </details>
+            </div>
+          </section>
+
+          <section class="column">
+            <h2>비서가 진행 중 <small>AI 팀원 차례 · 지켜봄</small><span class="count">3</span></h2>
+            <div class="cards">
+              <details class="card">
+                <summary>
+                  <h3>주간 지표 리포트 초안 작성</h3>
+                  <p class="next">수치 수집 완료 · 두 팀원이 분석 중</p>
+                  <div class="meta">직접 맡김 · 기한 11월 29일</div>
+                  <div class="chips"><span class="chip agent">AI 팀원 작업 중</span><span class="chip">긴급도 보통</span></div>
+                  <div class="progress"><span>작업 1/4</span><span class="bar"><i style="width:25%"></i></span></div>
+                </summary>
+                <div class="tasks">
+                  <p class="confirm"><b>맡긴 범위</b> 매출 변동과 운영 이슈를 함께 설명하는 초안까지. 두 분석을 병렬로 진행하고 비서가 집계표와 초안의 수치를 대조한다.</p>
+                  <p class="confirm"><b>지난 업무에서 반영</b> 사용자가 전주 수치를 다시 조회한 이유를 함께 확인했다. 이번에는 같은 분석 담당이 비교 기준일까지 첨부한다. 리포트 발송은 맡긴 범위 밖이다.</p>
+                  <div class="task done"><span class="mark">✓</span><span class="name">지난주 수치 수집 <span class="who">· 데이터 분석 담당</span></span><span class="state">기록으로 확인</span></div>
+                  <div class="task"><span class="mark">◔</span><span class="name">매출 변동 분석 <span class="who">· 데이터 분석 담당</span></span><span class="state go">진행할 수 있음</span></div>
+                  <div class="task"><span class="mark">◔</span><span class="name">운영 이슈 분석 <span class="who">· 운영 담당</span></span><span class="state go">진행할 수 있음</span></div>
+                  <div class="task"><span class="mark">○</span><span class="name">초안 취합·검증 <span class="who">· 비서</span></span><span class="state">선행 작업 대기</span></div>
+                </div>
+              </details>
+
+              <details class="card is-ending">
+                <summary>
+                  <h3>테스트 계정 10개 발급</h3>
+                  <div class="meta">QA팀 오세린 · 기한 11월 27일</div>
+                  <div class="ending"><span><b>철회됨</b> · 닫기 전</span><span>확인 완료</span></div>
+                  <div class="chips"><span class="chip">차례 없음</span><span class="chip">긴급도 보통</span></div>
+                </summary>
+                <div class="tasks">
+                  <div class="confirm"><b>채운 확인</b> 요청자가 철회함 (Slack 기록)</div>
+                  <div class="task"><span class="mark">◔</span><span class="name">계정 생성 <span class="who">· 나</span></span><span class="state stop">멈춰야 함</span></div>
+                </div>
+              </details>
+
+              <details class="card">
+                <summary>
+                  <h3>관리자 권한 부여 요청</h3>
+                  <p class="next">사유 확인 완료 · 보안 검토까지 보류</p>
+                  <div class="meta">개발2팀 최유나 · 기한 없음</div>
+                  <div class="chips"><span class="chip hold">보류</span><span class="chip">긴급도 낮음</span></div>
+                  <div class="progress"><span>작업 1/2</span><span class="bar"><i style="width:50%"></i></span></div>
+                </summary>
+                <div class="tasks">
+                  <div class="confirm"><b>재개 조건</b> 보안 검토 결과가 Jira에 등록되면</div>
+                  <div class="task done"><span class="mark">✓</span><span class="name">신청 사유 확인 <span class="who">· 나</span></span><span class="state">기록으로 확인</span></div>
+                  <div class="task"><span class="mark">○</span><span class="name">권한 부여 <span class="who">· 나</span></span><span class="state">보류</span></div>
+                </div>
+              </details>
+            </div>
+          </section>
+
+          <section class="column">
+            <h2>외부 진행 대기 중 <small>다른 사람·팀 차례</small><span class="count">1</span></h2>
+            <div class="cards">
+              <details class="card">
+                <summary>
+                  <h3>정산 리포트 수치 불일치 조사</h3>
+                  <p class="next">불일치 구간 확인 · 데이터팀 재집계 대기</p>
+                  <div class="meta">재무팀 박도윤 · 기한 12월 2일</div>
+                  <div class="chips"><span class="chip">차례 데이터팀</span><span class="chip">긴급도 보통</span><span class="chip">중요도 높음</span></div>
+                  <div class="progress"><span>작업 1/3</span><span class="bar"><i style="width:33%"></i></span></div>
+                </summary>
+                <div class="tasks">
+                  <div class="task done"><span class="mark">✓</span><span class="name">불일치 구간 확인 <span class="who">· 나</span></span><span class="state">사용자가 표시</span></div>
+                  <div class="task"><span class="mark">◔</span><span class="name">원천 데이터 재집계 요청 <span class="who">· 나 → 데이터팀</span></span><span class="state">대기</span></div>
+                  <div class="task"><span class="mark">○</span><span class="name">재무팀에 결과 전달 <span class="who">· 나</span></span><span class="state">선행 작업 대기</span></div>
+                </div>
+              </details>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <!-- 닫힘 -->
+      <section class="column closed">
+        <h2>닫힘 <small>닫힌 이유로 구분</small><span class="count">6</span></h2>
+        <div class="cards">
+          <details class="card">
+            <summary>
+              <h3>앱 푸시 문구 수정</h3>
+                  <p class="next">문구 반영과 요청자 회신까지 확인</p>
+              <div class="meta">마케팅팀 윤서아 · 11월 25일 닫음</div>
+              <div class="chips"><span class="chip reason">완료</span><span class="chip">기록으로 확인</span></div>
+            </summary>
+            <div class="tasks">
+              <div class="confirm"><b>약속한 결과</b> 새 문구 적용 후 마케팅팀에 알리기. <b>완료 근거</b> Jira PUSH-42 변경 기록에서 적용 문구를 확인했고, Slack 원래 스레드에서 사용자가 보낸 회신을 확인해 요청을 닫았다.</div>
+            </div>
+          </details>
+
+          <details class="card">
+            <summary>
+              <h3>회의실 예약 오류 문의</h3>
+              <div class="meta">총무팀 강태오 · 11월 25일 닫음</div>
+              <div class="chips"><span class="chip reason">완료</span><span class="chip">사용자가 확인</span></div>
+            </summary>
+            <div class="tasks">
+              <div class="confirm"><b>약속한 일</b> 사용자가 직접 확인 · <b>전달</b> 사용자가 직접 확인(구두)</div>
+            </div>
+          </details>
+
+          <details class="card">
+            <summary>
+              <h3>통계 대시보드 접근 권한</h3>
+              <div class="meta">영업팀 임수빈 · 11월 24일 닫음</div>
+              <div class="chips"><span class="chip reason">이관</span><span class="chip">인프라팀이 인수</span></div>
+            </summary>
+            <div class="tasks">
+              <div class="confirm"><b>결정</b> 사용자 · <b>전달</b> Slack 기록 · <b>인수</b> Jira 담당 변경 기록</div>
+            </div>
+          </details>
+
+          <details class="card">
+            <summary>
+              <h3>이벤트 페이지 배너 교체</h3>
+              <div class="meta">마케팅팀 윤서아 · 11월 22일 닫음</div>
+              <div class="chips"><span class="chip reason">철회</span><span class="chip">기록으로 확인</span></div>
+            </summary>
+            <div class="tasks">
+              <div class="confirm"><b>철회</b> Slack 기록 · 남은 작업 1개</div>
+            </div>
+          </details>
+
+          <details class="card">
+            <summary>
+              <h3>외부 메신저 연동 검토</h3>
+              <div class="meta">기획팀 서준영 · 11월 21일 닫음</div>
+              <div class="chips"><span class="chip reason">맡지 않음</span><span class="chip">사용자가 확인</span></div>
+            </summary>
+            <div class="tasks">
+              <div class="confirm"><b>결정</b> 사용자 · <b>전달</b> 사용자가 직접 확인(회의)</div>
+            </div>
+          </details>
+
+          <details class="card">
+            <summary>
+              <h3>전사 공지: 사무실 이전 안내</h3>
+              <div class="meta">총무팀 채널 · 11월 20일 닫음</div>
+              <div class="chips"><span class="chip reason">요청 아님</span><span class="chip">사용자가 정함</span></div>
+            </summary>
+            <div class="tasks">
+              <div class="confirm">대화에서 연결한 공지입니다. 사용자가 참고용이라고 확인했습니다.</div>
+            </div>
+          </details>
+        </div>
+      </section>
+    </div>
+    </div>
+
+    <section class="notes" aria-label="목업에서 확인할 점">
+      <article>
+        <h3>열은 끌어서 바꾸지 않는다</h3>
+        <p>접수와 진행 중은 저장하는 값이 아니라 작업에서 계산한 결과다. 작업을 시작하면 카드가 진행 중으로 옮겨 간다. 닫힘으로 보내는 것은 필요한 확인을 채워 닫는 일이다.</p>
+      </article>
+      <article>
+        <h3>진행 중은 누구 차례인지로 나눈다</h3>
+        <p>요청의 차례에 사용자가 있으면 "내 할 일", 사용자는 없고 AI 팀원이 있으면 "비서가 진행 중", 다른 사람이나 팀만 있으면 "외부 진행 대기 중"이다. 차례가 아무에게도 없는 요청(보류, 철회되어 닫기 전)은 비서가 지켜보다 처리하므로 비서 쪽에 둔다. 원장이 계산하는 차례와 주체의 종류를 쓰므로 따로 저장할 값은 없다.</p>
+      </article>
+      <article>
+        <h3>끝내기로 정한 요청은 진행 중에 남는다</h3>
+        <p>이관, 맡지 않음, 철회로 정한 요청은 구리색 띠로 사유와 남은 확인을 보여 준다. 그 전부터 있던 작업은 멈춰야 함으로, 알리기와 인수 확인 작업은 보통 작업으로 보인다.</p>
+      </article>
+      <article>
+        <h3>닫힘은 이유와 확인 방식을 함께 보여 준다</h3>
+        <p>완료와 철회, 이관, 맡지 않음, 요청 아님을 구분하고, 기록으로 확인했는지 사용자가 직접 확인했는지도 나눠 적는다. 미정, 보류, 다음 작업 미정은 열이 아니라 카드의 표시다.</p>
+      </article>
+    </section>
+
+    <footer><a href="../spec/request-ledger-states.html">요청과 작업의 상태 변화 다이어그램</a> · <a href="../spec/SPEC-request-ledger.md">request-ledger 스펙</a> · <a href="../intent/ai-butler.md">AI Butler의 목표</a> · <a href="product-references.md">설계에 참고한 제품</a></footer>
+  </main>
+  <script>
+    document.getElementById("mine-toggle").addEventListener("change", (event) => {
+      document.getElementById("board").classList.toggle("only-mine", event.target.checked);
+    });
+  </script>
+</body>
+</html>
