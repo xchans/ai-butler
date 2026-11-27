@@ -1,1 +1,10 @@
 _workspace/
+
+# 의존성
+node_modules/
+
+# 로컬 데이터 파일. 실행 중에 생기는 데이터는 저장소 밖에 두지만, 실수로 안에 생겨도 커밋되지 않게 한다.
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal

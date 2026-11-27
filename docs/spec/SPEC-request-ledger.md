@@ -207,11 +207,11 @@
 
 ## 공개 계약
 
-`src/request-ledger/index.ts`가 내보내는 것이다. 인자와 반환 타입의 세부는 구현하면서 이 표에 맞춰 정하고, 표를 바꿔야 하면 스펙을 먼저 고친다.
+`src/request-ledger/index.ts`는 `openLedger`와 `LedgerError`, 타입을 내보낸다. `openLedger`는 연 원장을 객체로 돌려주고, 아래 표의 나머지 함수는 그 객체의 메서드다. 한 프로세스에서 원장을 여럿 열 수 있고, 경로와 시계, id 생성은 원장을 열 때 정한다. 인자와 반환 타입의 세부는 구현하면서 이 표에 맞춰 정하고, 표를 바꿔야 하면 스펙을 먼저 고친다.
 
 | 묶음 | 함수 |
 |---|---|
-| 열기 | `openLedger({ path?, clock?, newId? })` |
+| 열기 | `openLedger({ path?, clock?, newId? })`, `close` |
 | 요청 | `createRequest`, `updateRequest`, `setPriority`, `setOrder`, `mergeRequests`, `splitRequest` |
 | 작업 | `addTask`, `updateTask`, `completeTask`, `cancelTask`, `moveTask`, `setContinue` |
 | 차례 | `setTurn`, `clearTurn` |
@@ -226,12 +226,12 @@
 | 준비 자료 | `attachMaterial`, `replaceMaterial` |
 | 조회 | `listRequests`, `getRequest`, `changesSince` |
 
-쓰는 함수는 모두 첫 인자로 주체를 받는다. 계약을 어기면 `LedgerError`를 던지고, 오류에는 어떤 규칙을 어겼는지 알 수 있는 코드가 있다.
+쓰는 함수는 모두 첫 인자로 주체를 받는다. `close`는 원장을 닫는다. 두 번 닫아도 오류가 아니고, 닫은 뒤의 읽기와 쓰기는 `ledger_closed` 오류다. 계약을 어기면 `LedgerError`를 던지고, 오류에는 어떤 규칙을 어겼는지 알 수 있는 코드가 있다.
 
 ## 저장 방식
 
 - 파일은 `$AI_BUTLER_HOME/ledger.sqlite`다. 폴더는 `0700`, 파일은 `0600`으로 만든다.
-- WAL 모드와 busy timeout을 써서 여러 프로세스가 동시에 읽고 쓸 수 있게 한다. 쓰기는 규칙 검사와 저장을 한 쓰기 트랜잭션 안에서 한다.
+- WAL 모드와 busy timeout을 써서 여러 프로세스가 동시에 읽고 쓸 수 있게 한다. 쓰기는 규칙 검사와 저장을 한 쓰기 트랜잭션 안에서 한다. 파일이 아직 없을 때 여러 프로세스가 동시에 처음 열어도 모두 열려야 한다. WAL 모드로 바꾸는 일은 잠금 상태에 따라 busy timeout을 기다리지 않고 실패할 수 있으므로 다시 시도하되, 다시 시도하는 시간을 모두 합쳐 busy timeout을 넘지 않게 한다.
 - 스키마 버전은 `PRAGMA user_version`으로 관리한다. 열 때 낮은 버전이면 순서대로 올리고, 높은 버전이면 열지 않고 오류를 낸다.
 
 ## 완료 조건
