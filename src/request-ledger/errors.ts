@@ -85,7 +85,13 @@ export type LedgerErrorCode =
   /** 확인할 사항이 가리킨 작업에 달린 것이 아니다 */
   | "open_item_not_on_task"
   /** 아직 전하지 않은 알릴 일을 봤다고 표시하려 했다 */
-  | "notice_not_delivered";
+  | "notice_not_delivered"
+  /** 가리킨 보류가 없다. 이미 푼 보류도 없는 보류다 */
+  | "hold_not_found"
+  /** 요청에 건 보류를 작업 하나에서만 풀려 했거나, 가리킨 작업에 건 보류가 아니다 */
+  | "hold_not_on_task"
+  /** 재개 조건이 없는 보류를 비서가 풀려 했다 */
+  | "hold_without_resume_condition";
 
 /** 계약을 어긴 호출에 던지는 오류. 거부된 쓰기는 아무것도 바꾸지 않는다. */
 export class LedgerError extends Error {

@@ -38,6 +38,7 @@ test("S2: 요청 조회에 값마다 정한 주체, 사용자 지정이 걸려 �
   assert.equal(request.createdAt, stored("09:00"));
   assert.equal(request.undecided, false);
   assert.equal(request.progress, null);
+  assert.equal(request.order, null);
   const byAssistant = { setBy: "assistant", userSet: false, userSetAt: null };
   assert.deepEqual(request.title, { value: "환불 지연 문의 대응", ...byAssistant });
   assert.deepEqual(request.requester, { value: jiwon, ...byAssistant });
@@ -73,8 +74,15 @@ test("S2: 요청 조회에 값마다 정한 주체, 사용자 지정이 걸려 �
       request.openItems,
       request.materials,
       request.evidenceRevisions,
+      request.holds,
+      request.turn,
     ],
-    [[], [], [], [], [], []],
+    [[], [], [], [], [], [], [], []],
+  );
+  // 작업이 없는 열린 요청은 접수이고 다음 작업 미정이다.
+  assert.deepEqual(
+    [request.state, request.myTurn, request.nextTaskUndecided],
+    ["open", false, true],
   );
 });
 

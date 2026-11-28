@@ -1,10 +1,12 @@
 // 테스트에서만 쓰는 도우미다. 모듈의 공개 계약이 아니다.
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
 import { LedgerError, type LedgerErrorCode } from "./errors.ts";
 import { type Ledger, openLedger } from "./index.ts";
 import { MIGRATIONS } from "./migrations.ts";
@@ -154,3 +156,104 @@ export const jiwon: Party = {
 export const minsu: Party = { kind: "person", name: "박민수" };
 export const csTeam: Party = { kind: "team", name: "CS팀" };
 export const me: Party = { kind: "user" };
+
+const writerScript = fileURLToPath(new URL("./concurrency-writer.ts", import.meta.url));
+
+/** 자식 프로세스가 신호를 보내지 않고 멈추면 끝없이 기다리게 되므로, 테스트마다 시간 제한을 둔다. */
+export const WORKER_TEST_TIMEOUT_MS = 30_000;
+
+export type FinishedWorker = {
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly stdout: string;
+  readonly stderr: string;
+};
+
+export type Worker = {
+  /** 표준 입력으로 신호 한 줄을 보낸다. */
+  send(line: string): void;
+  /** 표준 출력에 그 줄이 나올 때까지 기다린다. 그 전에 프로세스가 끝나면 바로 실패한다. */
+  waitForLine(line: string): Promise<void>;
+  /** 표준 출력에 그렇게 시작하는 줄이 나올 때까지 기다려 그 줄을 돌려준다. */
+  waitForLineStartingWith(prefix: string): Promise<string>;
+  /** 끝날 때까지 기다려 종료 코드, 신호, 출력을 돌려준다. */
+  finished(): Promise<FinishedWorker>;
+  kill(signal?: NodeJS.Signals): void;
+};
+
+/** concurrency-writer.ts를 별도 프로세스로 띄운다. `home`이 그 프로세스의 AI_BUTLER_HOME이다. */
+export function startWorker(args: readonly string[], home: string): Worker {
+  const child = spawn(process.execPath, [writerScript, ...args], {
+    env: { ...process.env, AI_BUTLER_HOME: home },
+  });
+  let stdout = "";
+  let stderr = "";
+  let exit: Pick<FinishedWorker, "code" | "signal"> | undefined;
+  // 출력이 더 왔거나 프로세스가 끝났을 때 깨울 것들.
+  const waiters = new Set<() => void>();
+  const wake = (): void => {
+    for (const waiter of [...waiters]) {
+      waiter();
+    }
+  };
+  child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+    stdout += chunk;
+    wake();
+  });
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+    stderr += chunk;
+  });
+  // 이미 끝난 프로세스에 신호를 보내도 테스트가 죽지 않게 한다. 끝난 것은 waitForLine과 finished가 알린다.
+  child.stdin.on("error", () => {});
+  // close는 출력이 모두 도착한 뒤에 온다. 정상 종료든 신호로 죽었든 한 번 온다.
+  const closed = new Promise<void>((resolve) => {
+    child.once("close", (code, signal) => {
+      exit = { code, signal };
+      wake();
+      resolve();
+    });
+  });
+  /** 조건에 맞는 줄이 나올 때까지 기다린다. 줄 수신과 프로세스 종료를 함께 기다린다. */
+  const waitForLineWhere = async (
+    matches: (line: string) => boolean,
+    wanted: string,
+  ): Promise<string> => {
+    for (;;) {
+      const found = stdout.split("\n").slice(0, -1).find(matches);
+      if (found !== undefined) {
+        return found;
+      }
+      if (exit !== undefined) {
+        throw new Error(
+          `${wanted}을 찍기 전에 프로세스가 끝났다 (code ${exit.code}, signal ${exit.signal}): ${stderr}`,
+        );
+      }
+      await new Promise<void>((resolve) => {
+        const waiter = (): void => {
+          waiters.delete(waiter);
+          resolve();
+        };
+        waiters.add(waiter);
+      });
+    }
+  };
+
+  return {
+    send(line) {
+      child.stdin.write(`${line}\n`);
+    },
+    async waitForLine(line) {
+      await waitForLineWhere((candidate) => candidate === line, `"${line}"`);
+    },
+    waitForLineStartingWith(prefix) {
+      return waitForLineWhere((candidate) => candidate.startsWith(prefix), `"${prefix}…"`);
+    },
+    async finished() {
+      await closed;
+      return { code: exit?.code ?? null, signal: exit?.signal ?? null, stdout, stderr };
+    },
+    kill(signal) {
+      child.kill(signal);
+    },
+  };
+}

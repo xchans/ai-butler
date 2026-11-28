@@ -18,13 +18,26 @@
 //     받은 뒤에도 <밀리초> 동안 더 쥐고 있다가 커밋한다. 상대가 잠금을 기다리는 구간을 만들려는 것이다.
 //   reserve <파일> <밀리초>
 //     WAL로 바꾸지 않고 파일을 열어 쓰기를 예약하고 "locked"를 찍는다. <밀리초> 뒤에 예약을 푼다.
+//   write-once <JSON>
+//     AI_BUTLER_HOME의 원장에 공개 쓰기 하나를 한다. 쓰기 잠금을 잡으면 "locked"를 찍고 "release"를 받을 때까지
+//     잠금을 쥔 채 기다린다. 받은 뒤에도 잠깐 더 쥐고 있다가 커밋하고 "committed"를 찍는다.
+//     JSON은 `LockedWrite`다. 한 프로세스가 쓰는 동안 다른 프로세스가 같은 대상을 쓰는 경우를 만든다.
 import { readSync, writeSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { write } from "./changes.ts";
 import { openDb, resolveLedgerPath } from "./db.ts";
+import type { PlaceHoldInput } from "./hold.ts";
 import { type Ledger, openLedger } from "./index.ts";
 import { createRequest } from "./request.ts";
+import type { UpdateTaskInput } from "./task.ts";
 import { HELD_REQUEST_ID } from "./test-support.ts";
+import type { Actor } from "./types.ts";
+
+/** write-once 모드가 하는 쓰기 하나. `lingerMs`는 "release"를 받은 뒤에도 잠금을 더 쥐고 있는 시간이다. */
+export type LockedWrite = { readonly actor: Actor; readonly lingerMs: number } & (
+  | { readonly method: "placeHold"; readonly input: PlaceHoldInput }
+  | { readonly method: "updateTask"; readonly input: UpdateTaskInput }
+);
 
 export type WriteResult = {
   readonly written: number;
@@ -197,6 +210,26 @@ function runReserve(path: string, holdMs: number): void {
   db.close();
 }
 
+function runWriteOnce(spec: LockedWrite): void {
+  const ledger = openLedger({
+    // 원장은 쓰기 잠금을 잡은 뒤에 시계를 읽는다. 그 순간을 빌려 잠금을 쥔 채로 멈춘다.
+    clock: () => {
+      say("locked");
+      waitFor("release");
+      // 신호를 보낸 상대가 쓰기를 시작해 잠금을 기다리게 될 틈을 준다. 이 시간으로 판정하는 것은 없다.
+      sleepSync(spec.lingerMs);
+      return new Date();
+    },
+  });
+  if (spec.method === "placeHold") {
+    ledger.placeHold(spec.actor, spec.input);
+  } else {
+    ledger.updateTask(spec.actor, spec.input);
+  }
+  ledger.close();
+  say("committed");
+}
+
 const [mode, first = "", second = ""] = process.argv.slice(2);
 if (mode === "holder") {
   runHolder(first, Number(second));
@@ -208,6 +241,8 @@ if (mode === "holder") {
   runHold(first, Number(second));
 } else if (mode === "reserve") {
   runReserve(first, Number(second));
+} else if (mode === "write-once") {
+  runWriteOnce(JSON.parse(first) as LockedWrite);
 } else {
   throw new Error(`알 수 없는 모드: ${String(mode)}`);
 }

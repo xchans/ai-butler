@@ -2,13 +2,16 @@
 // 쓰기를 더하는 작업이 자기가 더한 것을 여기에 함께 더한다.
 import { type Row, readChanges } from "./changes.ts";
 import { inReadTransaction, type LedgerDb } from "./db.ts";
+import type { TaskDisplay, TaskStanding } from "./display.ts";
 import { LedgerError } from "./errors.ts";
 import { FINISH_EVIDENCE_SQL, finishAction } from "./evidence.ts";
 import { requiredText } from "./input.ts";
 import type { LinkRole } from "./link.ts";
 import type { OpenItemKind } from "./open-item.ts";
 import { storedParty } from "./party.ts";
+import { type RequestState, readRequestRows, standingOf, taskStandingIn } from "./status.ts";
 import type { TaskStatus } from "./task.ts";
+import { readUserTurn, type UserTurn } from "./turn.ts";
 import type { Change, EvidenceRef, Party, SetBy } from "./types.ts";
 import {
   type PriorityLevel,
@@ -106,6 +109,31 @@ export type TaskView = {
   readonly completion: (FinishView & { readonly confirmed: "user_marked" | "from_record" }) | null;
   /** 취소한 쪽과 사유. 취소가 아니면 null. */
   readonly cancellation: (FinishView & { readonly reason: string | null }) | null;
+  /**
+   * 보류로 조회되는지. 자기에게 걸린 보류나 속한 요청에 걸린 보류가 하나라도 남아 있으면 true다.
+   * 보류는 상태 위에 얹는 표시여서 상태는 그대로 나온다.
+   */
+  readonly onHold: boolean;
+  /** 표시. 끝나지 않은 작업을 스펙의 표에서 먼저 맞는 줄 하나로 나타낸 코드다. 끝난 작업에는 없다. */
+  readonly display: TaskDisplay | null;
+  /**
+   * 차례. 지금 행동해야 하는 주체다. 표시에 따라 대기 대상의 주체나 담당이고, 사용자가 차례를 정했으면 그 값이다.
+   * 보류된 작업처럼 차례가 없는 표시이면 사용자가 정한 차례가 있어도 null이다.
+   */
+  readonly turn: Party | null;
+  /** 사용자가 정한 차례와 정한 시각. 정하지 않았으면 null. */
+  readonly userTurn: UserTurn | null;
+};
+
+/** 걸려 있는 보류 하나. */
+export type HoldView = {
+  readonly id: string;
+  /** 대상. 작업에 건 보류면 그 작업이고, 요청에 건 보류면 null이다. */
+  readonly taskId: string | null;
+  /** 재개 조건. 없으면 사용자가 직접 풀 때까지 둔다. */
+  readonly resumeCondition: string | null;
+  /** 건 시각. */
+  readonly placedAt: string;
 };
 
 export type OpenItemView = {
@@ -150,10 +178,25 @@ export type RequestView = {
   readonly due: ValueView<string>;
   readonly urgency: ValueView<PriorityLevel>;
   readonly importance: ValueView<PriorityLevel>;
+  /** 사용자가 정한 처리 순서. 정하지 않았으면 null. */
+  readonly order: number | null;
   /** 진척. 지금 어디까지 왔는지. */
   readonly progress: string | null;
+  /** 요청의 상태. 접수와 진행 중은 작업에서 계산한 값이다. */
+  readonly state: RequestState;
+  /**
+   * 요청의 차례. 끝나지 않은 작업들의 차례를 작업의 순서대로 모은 것이고, 같은 주체는 한 번만 나온다.
+   * 풀리지 않은 질문이나 승인이 있으면 사용자가 더해진다.
+   */
+  readonly turn: readonly Party[];
+  /** 내 차례인 요청인지. 요청의 차례에 사용자가 들어 있다. */
+  readonly myTurn: boolean;
+  /** 다음 작업 미정. 끝나지 않은 작업이 없다. */
+  readonly nextTaskUndecided: boolean;
   /** 작업들. 더한 순서다. */
   readonly tasks: readonly TaskView[];
+  /** 걸려 있는 보류들. 요청에 건 것과 작업에 건 것이 건 순서대로 함께 나온다. */
+  readonly holds: readonly HoldView[];
   /** 기록과의 연결들. */
   readonly links: readonly LinkView[];
   /** 연결된 기록들과 그 판본들. */
@@ -169,11 +212,11 @@ export type RequestView = {
   readonly evidenceRevisions: readonly CitedRevisionView[];
 };
 
-function nullableText(value: unknown): string | null {
+export function nullableText(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
-function valueView<T>(row: Row, name: RequestValueName): ValueView<T> {
+export function valueView<T>(row: Row, name: RequestValueName): ValueView<T> {
   const state = readValue(row, name);
   return {
     value: parsedValue(name, state.value) as T | null,
@@ -215,7 +258,12 @@ function finishEvidence(db: LedgerDb, task: Row): EvidenceView[] {
   });
 }
 
-function taskView(db: LedgerDb, row: Row): TaskView {
+function taskView(
+  db: LedgerDb,
+  row: Row,
+  dependsOn: readonly string[],
+  standing: TaskStanding,
+): TaskView {
   const id = String(row.id);
   const finish = (): FinishView => ({
     by: row.finished_by as SetBy,
@@ -232,10 +280,7 @@ function taskView(db: LedgerDb, row: Row): TaskView {
       typeof row.waiting_for === "string"
         ? { party: storedParty(row.waiting_for) as Party, what: nullableText(row.waiting_what) }
         : null,
-    dependsOn: db
-      .prepare("SELECT depends_on FROM task_dependencies WHERE task_id = ? ORDER BY rowid")
-      .all(id)
-      .map((dependency) => String(dependency.depends_on)),
+    dependsOn,
     // 사용자의 완료는 언제나 사용자가 표시한 완료이고, 비서의 완료는 언제나 근거가 있는 완료다.
     completion:
       row.status === "done"
@@ -243,17 +288,46 @@ function taskView(db: LedgerDb, row: Row): TaskView {
         : null,
     cancellation:
       row.status === "cancelled" ? { ...finish(), reason: nullableText(row.cancel_reason) } : null,
+    onHold: standing.onHold,
+    display: standing.display,
+    turn: standing.turn,
+    userTurn: readUserTurn(row),
+  };
+}
+
+export function holdView(row: Row): HoldView {
+  return {
+    id: String(row.id),
+    taskId: nullableText(row.task_id),
+    resumeCondition: nullableText(row.resume_condition),
+    placedAt: String(row.placed_at),
+  };
+}
+
+export function openItemView(item: Row): OpenItemView {
+  return {
+    id: String(item.id),
+    taskId: nullableText(item.task_id),
+    kind: item.kind as OpenItemKind,
+    content: String(item.content),
+    options: typeof item.options === "string" ? (JSON.parse(item.options) as string[]) : null,
+    raisedAt: String(item.raised_at),
+    resolved: item.resolved_at !== null,
+    answer: nullableText(item.answer),
+    resolvedAt: nullableText(item.resolved_at),
   };
 }
 
 /**
  * 요청의 변경 이력을 고르는 조건. 그 요청에 속해 있을 때 남은 건과,
- * 지금 그 요청에 있는 것(작업, 연결, 확인할 사항, 알릴 일, 준비 자료)을 대상으로 한 건이다.
+ * 지금 그 요청에 있는 것(작업, 연결, 보류, 확인할 사항, 알릴 일, 준비 자료)을 대상으로 한 건이다.
+ * 푼 보류처럼 지운 것의 이력은 그 요청에 속해 있을 때 남은 건으로 나온다.
  */
 const REQUEST_CHANGES = `
   request_id = ?1
   OR (target_kind = 'task' AND target_id IN (SELECT id FROM tasks WHERE request_id = ?1))
   OR (target_kind = 'link' AND target_id IN (SELECT id FROM links WHERE request_id = ?1))
+  OR (target_kind = 'hold' AND target_id IN (SELECT id FROM holds WHERE request_id = ?1))
   OR (target_kind = 'open_item' AND target_id IN (SELECT id FROM open_items WHERE request_id = ?1))
   OR (target_kind = 'notice' AND target_id IN (SELECT id FROM notices WHERE request_id = ?1))
   OR (target_kind = 'material' AND target_id IN (SELECT id FROM materials WHERE request_id = ?1))
@@ -300,6 +374,9 @@ function readRequest(db: LedgerDb, requestId: string): RequestView {
   const links = all("SELECT * FROM links WHERE request_id = ? ORDER BY rowid");
   const recordIds = [...new Set(links.map((link) => String(link.record_id)))];
   const changes = readChanges(db, REQUEST_CHANGES, id);
+  // 상태, 차례, 표시는 저장하지 않는다. 목록 조회와 같은 계산으로 구한다.
+  const rows = readRequestRows(db, id);
+  const standing = standingOf(rows);
   return {
     id,
     createdAt: String(row.created_at),
@@ -310,10 +387,17 @@ function readRequest(db: LedgerDb, requestId: string): RequestView {
     due: valueView(row, "due"),
     urgency: valueView(row, "urgency"),
     importance: valueView(row, "importance"),
+    order: typeof row.user_order === "number" ? row.user_order : null,
     progress: nullableText(row.progress),
-    tasks: all("SELECT * FROM tasks WHERE request_id = ? ORDER BY added_seq, rowid").map((task) =>
-      taskView(db, task),
-    ),
+    state: standing.state,
+    turn: standing.turn,
+    myTurn: standing.myTurn,
+    nextTaskUndecided: standing.nextTaskUndecided,
+    tasks: rows.tasks.map((task) => {
+      const taskId = String(task.id);
+      return taskView(db, task, rows.dependsOn.get(taskId) ?? [], taskStandingIn(standing, taskId));
+    }),
+    holds: rows.holds.map(holdView),
     links: links.map((link) => ({
       id: String(link.id),
       recordId: String(link.record_id),
@@ -333,17 +417,7 @@ function readRequest(db: LedgerDb, requestId: string): RequestView {
           .map(revisionView),
       };
     }),
-    openItems: all("SELECT * FROM open_items WHERE request_id = ? ORDER BY rowid").map((item) => ({
-      id: String(item.id),
-      taskId: nullableText(item.task_id),
-      kind: item.kind as OpenItemKind,
-      content: String(item.content),
-      options: typeof item.options === "string" ? (JSON.parse(item.options) as string[]) : null,
-      raisedAt: String(item.raised_at),
-      resolved: item.resolved_at !== null,
-      answer: nullableText(item.answer),
-      resolvedAt: nullableText(item.resolved_at),
-    })),
+    openItems: rows.openItems.map(openItemView),
     materials: all("SELECT * FROM materials WHERE request_id = ? ORDER BY rowid").map(
       (material) => ({
         id: String(material.id),

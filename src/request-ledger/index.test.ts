@@ -126,19 +126,25 @@ test("공개 계약: 나머지 함수는 openLedger가 돌려준 원장 객체�
     "attachMaterial",
     "cancelTask",
     "changesSince",
+    "clearTurn",
     "close",
     "completeTask",
     "createRequest",
     "getRequest",
     "linkRecord",
     "listNotices",
+    "listRequests",
     "markNoticeDelivered",
     "markNoticeSeen",
+    "placeHold",
     "raiseOpenItem",
+    "releaseHold",
     "replaceMaterial",
     "resolveOpenItem",
+    "setOrder",
     "setPriority",
     "setProgress",
+    "setTurn",
     "updateRequest",
     "updateTask",
   ]);
@@ -167,6 +173,7 @@ test("공개 계약: 한 프로세스에서 원장을 여럿 열 수 있고 하�
     isClosedError,
   );
   assert.throws(() => first.getRequest("req-first"), isClosedError);
+  assert.throws(() => first.listRequests(), isClosedError);
   assert.throws(() => first.listNotices(), isClosedError);
 
   // 다른 원장은 그대로 읽고 쓴다. 경로와 id 생성은 원장마다 따로다.

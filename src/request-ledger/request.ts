@@ -85,6 +85,12 @@ export type SetPriorityInput = WriteGrounds & {
   readonly clearUserSet?: readonly ("urgency" | "importance")[];
 };
 
+export type SetOrderInput = WriteGrounds & {
+  readonly requestId: string;
+  /** 사용자가 정한 처리 순서. 작은 값이 목록의 앞이다. null이면 지운다. */
+  readonly order: number | null;
+};
+
 const NAMES_IN_KOREAN: Record<RequestValueName, string> = {
   title: "제목",
   requester: "요청자",
@@ -352,5 +358,38 @@ export function setPriority(scope: WriteScope, input: SetPriorityInput): void {
     clearUserSet: distinctOneOf(fields.clearUserSet, "clearUserSet", PRIORITY_VALUES),
     decide: false,
     evidence: checkedEvidence(scope, fields.evidence),
+  });
+}
+
+/**
+ * 처리 순서를 정하거나 지운다. 사용자만 쓴다. 처리 순서를 정한 요청은 목록에서 그 순서대로 먼저 온다.
+ * 지금 값과 같으면 바뀌는 것이 없어 변경 이력을 남기지 않는다.
+ */
+export function setOrder(scope: WriteScope, input: SetOrderInput): void {
+  const fields = checkedFields(input, "setOrder의 인자", ["requestId", "order", "evidence"]);
+  if (scope.actor.kind !== "user") {
+    throw new LedgerError("requires_user", "처리 순서는 사용자만 정하고 지울 수 있다");
+  }
+  const order = fields.order;
+  if (order !== null && !(typeof order === "number" && Number.isSafeInteger(order))) {
+    throw new LedgerError(
+      "invalid_argument",
+      "처리 순서(order)는 정수여야 한다. 지우려면 null을 준다",
+    );
+  }
+  const row = existingRequest(scope, fields.requestId);
+  const requestId = String(row.id);
+  const evidence = checkedEvidence(scope, fields.evidence);
+  const before = typeof row.user_order === "number" ? row.user_order : null;
+  if (before === order) {
+    return;
+  }
+  scope.run("UPDATE requests SET user_order = ? WHERE id = ?", order, requestId);
+  scope.record({
+    target: { kind: "request", id: requestId },
+    requestId,
+    before: { order: before },
+    after: { order },
+    evidence: evidenceJson(evidence),
   });
 }

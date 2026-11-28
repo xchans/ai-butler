@@ -60,3 +60,13 @@ export function existingOpenItem(scope: WriteScope, openItemId: unknown): Row {
   }
   return row;
 }
+
+/** 걸려 있는 보류를 찾는다. 푼 보류는 줄을 지우므로 없는 보류다. */
+export function existingHold(scope: WriteScope, holdId: unknown): Row {
+  const id = requiredText(holdId, "holdId");
+  const row = scope.get("SELECT * FROM holds WHERE id = ?", id);
+  if (row === undefined) {
+    throw new LedgerError("hold_not_found", `보류가 없다 (${id}). 이미 푼 보류일 수 있다`);
+  }
+  return row;
+}

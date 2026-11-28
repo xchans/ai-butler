@@ -381,6 +381,7 @@ test("S27: 밝히지 않은 적용 범위의 기본값은 쓰기에 따라 정�
     "addTask",
     "linkRecord",
     "setTurn",
+    "clearTurn",
     "mergeRequests",
     "splitRequest",
     "moveTask",

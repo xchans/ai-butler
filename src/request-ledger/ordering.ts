@@ -13,18 +13,30 @@ export function anyAfter(evidenceTimes: readonly string[], baseAt: string): bool
 }
 
 /**
- * 나중 판본이 있는지. 나중 판본은 원본 시각이 사용자의 정정보다 뒤이고,
+ * 판본 하나가 그 값의 나중 판본인지. 나중 판본은 원본 시각이 사용자의 정정보다 뒤이고,
  * 그 값에 마지막으로 반영된 근거 판본의 원본 시각보다 앞서지 않는 판본이다.
- * 판본이 늦게 도착해도 값이 예전으로 되돌아가지 않게 한다.
+ * 사용자가 바로잡은 적 없는 값이면(`correctedAt`이 null) 뒤의 조건만 본다.
+ */
+export function isLaterRevision(
+  revisionAt: string,
+  correctedAt: string | null,
+  reflectedAt: string | null,
+): boolean {
+  return (
+    (correctedAt === null || isAfter(revisionAt, correctedAt)) &&
+    (reflectedAt === null || revisionAt >= reflectedAt)
+  );
+}
+
+/**
+ * 나중 판본이 있는지. 판본이 늦게 도착해도 값이 예전으로 되돌아가지 않게 한다.
  */
 export function hasLaterRevision(
   revisionTimes: readonly string[],
   correctedAt: string,
   reflectedAt: string | null,
 ): boolean {
-  return revisionTimes.some(
-    (time) => isAfter(time, correctedAt) && (reflectedAt === null || time >= reflectedAt),
-  );
+  return revisionTimes.some((time) => isLaterRevision(time, correctedAt, reflectedAt));
 }
 
 /** 근거들 가운데 가장 늦은 시각. 없으면 null. */

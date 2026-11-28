@@ -316,6 +316,20 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX materials_by_request ON materials (request_id);
     `,
   },
+  {
+    // 데이터 모델의 "holds". 보류 하나하나를 따로 저장하고, 풀면 줄을 지운다.
+    name: "보류",
+    sql: `
+      CREATE TABLE holds (
+        id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL REFERENCES requests (id),
+        task_id TEXT REFERENCES tasks (id),
+        resume_condition TEXT,
+        placed_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX holds_by_request ON holds (request_id);
+    `,
+  },
 ];
 
 export function schemaVersion(db: DatabaseSync): number {

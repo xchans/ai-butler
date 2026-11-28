@@ -27,6 +27,19 @@ export type OpenDbOptions = {
   readonly migrations?: readonly Migration[];
   /** 잠금을 기다리는 시간. 없으면 `BUSY_TIMEOUT_MS`. 테스트에서 줄여 쓴다. */
   readonly busyTimeoutMs?: number;
+  /**
+   * WAL로 바꾸는 한도를 재는 시계와 대기. 없으면 실제 단조 시계와 실제 대기를 쓴다.
+   * 테스트가 시계와 대기를 제어할 때만 바꾸는 내부 옵션이다. 원장의 공개 계약(`openLedger`)에는 내보내지 않는다.
+   */
+  readonly walTiming?: WalTiming;
+};
+
+/** WAL로 바꾸는 한도를 재는 데 쓰는 시계와, 다시 시도하기 전에 쉬는 대기. */
+export type WalTiming = {
+  /** 단조 시계의 지금 시각(밀리초). 시스템 시각이 바뀌어도 한도가 늘거나 줄지 않게 단조 시계로 잰다. */
+  readonly now: () => number;
+  /** 그 시간만큼 쉰다. */
+  readonly sleep: (ms: number) => void;
 };
 
 /** 원장 파일의 기본 위치. AI_BUTLER_HOME이 있으면 그 폴더, 없으면 사용자 폴더의 Application Support 아래다. */
@@ -74,19 +87,20 @@ function journalModeOf(db: LedgerDb): string {
   return String(db.prepare("PRAGMA journal_mode").get()?.journal_mode);
 }
 
+const REAL_WAL_TIMING: WalTiming = { now: () => performance.now(), sleep: sleepSync };
+
 /** 잠금 오류로 끝나면 한도까지 잠깐씩 쉬며 다시 시도한다. 한도가 지났어도 한 번은 시도한다. */
-function retryWhileBusy(deadline: number, attempt: () => void): void {
+function retryWhileBusy(timing: WalTiming, deadline: number, attempt: () => void): void {
   for (;;) {
     try {
       attempt();
       return;
     } catch (error) {
-      // 시스템 시각이 바뀌어도 한도가 늘거나 줄지 않게 단조 시계로 잰다.
-      const remainingMs = deadline - performance.now();
+      const remainingMs = deadline - timing.now();
       if (!isBusyError(error) || remainingMs <= 0) {
         throw error;
       }
-      sleepSync(Math.min(WAL_RETRY_INTERVAL_MS, remainingMs));
+      timing.sleep(Math.min(WAL_RETRY_INTERVAL_MS, remainingMs));
     }
   }
 }
@@ -114,9 +128,10 @@ function convertToWal(
   migrations: readonly Migration[],
   deadline: number,
   busyTimeoutMs: number,
+  timing: WalTiming,
 ): boolean {
   // 쓰기 잠금을 기다리는 시간도 남은 한도 안으로 제한한다. 한도가 지났으면 기다리지 않고 한 번만 시도한다.
-  setBusyTimeout(db, deadline - performance.now());
+  setBusyTimeout(db, deadline - timing.now());
   db.exec("BEGIN IMMEDIATE");
   try {
     const version = schemaVersion(db);
@@ -130,8 +145,8 @@ function convertToWal(
     db.exec("PRAGMA locking_mode = EXCLUSIVE");
     setBusyTimeout(db, 0);
     // 쓴 것이 없는 커밋이지만, 배타 잠금 모드라 여기서 읽는 연결이 모두 빠지기를 기다리고 잠금을 쥔 채 끝난다.
-    retryWhileBusy(deadline, () => db.exec("COMMIT"));
-    retryWhileBusy(deadline, () => {
+    retryWhileBusy(timing, deadline, () => db.exec("COMMIT"));
+    retryWhileBusy(timing, deadline, () => {
       const mode = db.prepare("PRAGMA journal_mode = WAL").get()?.journal_mode;
       if (mode !== "wal") {
         throw new Error(`원장 파일을 WAL 모드로 바꾸지 못했다 (지금 모드: ${String(mode)})`);
@@ -169,6 +184,7 @@ const OPEN_ROUNDS = 8;
 export function openDb(path: string, options: OpenDbOptions = {}): LedgerDb {
   const migrations = options.migrations ?? MIGRATIONS;
   const busyTimeoutMs = options.busyTimeoutMs ?? BUSY_TIMEOUT_MS;
+  const timing = options.walTiming ?? REAL_WAL_TIMING;
   const inMemory = path === MEMORY_PATH;
   const file = inMemory ? path : resolve(path);
   if (!inMemory) {
@@ -198,9 +214,8 @@ export function openDb(path: string, options: OpenDbOptions = {}): LedgerDb {
         return db;
       }
       if (journalModeOf(db) !== "wal") {
-        // 시스템 시각이 바뀌어도 한도가 늘거나 줄지 않게 단조 시계로 잰다.
-        walDeadline ??= performance.now() + busyTimeoutMs;
-        if (convertToWal(db, migrations, walDeadline, busyTimeoutMs)) {
+        walDeadline ??= timing.now() + busyTimeoutMs;
+        if (convertToWal(db, migrations, walDeadline, busyTimeoutMs, timing)) {
           db.close();
           db = connect();
         }

@@ -82,6 +82,10 @@ test("작업을 더하면 할 일, 담당, 상태, 대기 대상, 선후 관계�
       dependsOn: [],
       completion: null,
       cancellation: null,
+      onHold: false,
+      display: "actionable",
+      turn: minsu,
+      userTurn: null,
     },
     {
       id: change.id,
@@ -93,6 +97,11 @@ test("작업을 더하면 할 일, 담당, 상태, 대기 대상, 선후 관계�
       dependsOn: [investigate.id],
       completion: null,
       cancellation: null,
+      // 선행 작업이 끝나지 않아 대기보다 위의 줄로 표시된다.
+      onHold: false,
+      display: "predecessor_pending",
+      turn: null,
+      userTurn: null,
     },
     {
       id: reply.id,
@@ -104,6 +113,10 @@ test("작업을 더하면 할 일, 담당, 상태, 대기 대상, 선후 관계�
       dependsOn: [investigate.id, change.id],
       completion: null,
       cancellation: null,
+      onHold: false,
+      display: "predecessor_pending",
+      turn: null,
+      userTurn: null,
     },
   ]);
   // 작업을 더한 것이 요청의 변경 이력에 작업을 대상으로 남는다.

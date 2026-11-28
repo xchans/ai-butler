@@ -131,11 +131,12 @@ test("연결을 열 때 외래 키 검사를 켜고, 테이블은 데이터 모�
        VALUES ('task-1', 'request-none', '2026-03-02T09:00:00.000000Z', 1, '작업', 1, 'todo')`,
     ),
   );
-  // 보류, 닫기, 묶음, 맡긴 일의 테이블은 그 작업에서 만든다.
+  // 닫기, 묶음, 맡긴 일의 테이블은 그 작업에서 만든다.
   assert.deepEqual(
     tableNames(path).filter((name) => name !== "sqlite_sequence"),
     [
       "changes",
+      "holds",
       "links",
       "materials",
       "notices",
@@ -1039,13 +1040,15 @@ test("S29: 원장을 연 뒤에 다른 프로그램이 파일을 더 높은 버�
       title: "올리기 전에 붙인 자료",
       content: "올리기 전의 내용",
     });
+    const hold = ledger.placeHold(user, { requestId, resumeCondition: "답이 오면 재개" });
     const before = {
       request: ledger.getRequest(requestId),
+      requests: ledger.listRequests(),
       changes: ledger.changesSince(0),
       notices: ledger.listNotices(),
       rows: fileState(path),
     };
-    assert.equal(before.changes.length, 6, label);
+    assert.equal(before.changes.length, 7, label);
 
     // 원장을 열어 둔 채로 다음 버전의 프로그램이 같은 파일을 올린다.
     upgradeInAnotherProcess(path, leaveWithoutWal);
@@ -1057,10 +1060,16 @@ test("S29: 원장을 연 뒤에 다른 프로그램이 파일을 더 높은 버�
       ["createRequest", () => ledger.createRequest(user, { stated: { title: "올린 뒤의 요청" } })],
       ["updateRequest", () => ledger.updateRequest(user, { requestId, title: "올린 뒤의 제목" })],
       ["setPriority", () => ledger.setPriority(user, { requestId, urgency: "high" })],
+      ["setOrder", () => ledger.setOrder(user, { requestId, order: 1 })],
       ["addTask", () => ledger.addTask(triage, { requestId, work: "올린 뒤의 작업" })],
       ["updateTask", () => ledger.updateTask(user, { taskId, status: "in_progress" })],
       ["completeTask", () => ledger.completeTask(user, { taskId })],
       ["cancelTask", () => ledger.cancelTask(user, { taskId })],
+      ["setTurn", () => ledger.setTurn(user, { taskId, turn: { kind: "user" } })],
+      // 지울 차례가 없어도, 버전이 다르면 쓰기를 시작하는 자리에서 거부된다.
+      ["clearTurn", () => ledger.clearTurn(user, { taskId })],
+      ["placeHold", () => ledger.placeHold(user, { requestId, taskId })],
+      ["releaseHold", () => ledger.releaseHold(user, { holdId: hold.id })],
       [
         "addRevision",
         () =>
@@ -1108,7 +1117,7 @@ test("S29: 원장을 연 뒤에 다른 프로그램이 파일을 더 높은 버�
       ["setProgress", () => ledger.setProgress(triage, { requestId, progress: "조사 중" })],
     ];
     // 이 표는 원장의 공개 쓰기를 빠짐없이 담는다. 쓰기가 늘면 여기서 드러난다.
-    const reads = ["getRequest", "changesSince", "listNotices", "close"];
+    const reads = ["getRequest", "listRequests", "changesSince", "listNotices", "close"];
     assert.deepEqual(
       writes.map(([name]) => name).toSorted(),
       Object.keys(ledger)
@@ -1126,6 +1135,7 @@ test("S29: 원장을 연 뒤에 다른 프로그램이 파일을 더 높은 버�
     // 읽기는 된다. 올리기 전에 쓴 것이 그대로 나온다.
     assert.deepEqual(ledger.changesSince(0), before.changes, label);
     assert.deepEqual(ledger.getRequest(requestId), before.request, label);
+    assert.deepEqual(ledger.listRequests(), before.requests, label);
     assert.deepEqual(ledger.listNotices(), before.notices, label);
     assert.equal(ledger.getRequest(requestId).openItems[0]?.resolved, false, label);
     // 쓰기 트랜잭션이 남아 있지 않아, 다음 버전의 프로그램은 이어서 쓸 수 있다.
@@ -1186,12 +1196,17 @@ function revertToRollbackJournal(path: string): void {
 
 test("WAL로 바꾸는 일을 처음부터 다시 하게 돼도 한 번 여는 동안의 대기 한도는 새로 잡지 않는다", (t) => {
   assertSqliteRestoredAfter(t);
-  const budgetMs = 800;
-  // 한 회차에서 읽는 연결이 빠지기까지의 커밋 시도 횟수. 실패한 시도마다 10ms를 쉬므로 한 회차에 440ms 넘게 걸린다.
-  // 한 회차는 한도 안이지만 두 회차를 합치면 한도를 넘는다.
-  const attemptsUntilReaderLeaves = 45;
+  const budgetMs = 400;
+  // 첫 회차가 쓰기 잠금을 기다리는 데 쓴 것으로 치는 시간. 테스트가 시계를 직접 이만큼 앞으로 돌리므로
+  // 재시도 간격이나 시도 횟수와 무관하다. 한도의 절반을 쓰고 절반을 남긴다.
+  const firstRoundMs = budgetMs / 2;
+  const secondRounds = [
+    "읽는 연결 때문에 커밋을 다시 시도",
+    "쓰기 잠금을 기다림",
+    "저널 모드를 바꾸는 일을 다시 시도",
+  ] as const;
 
-  for (const secondRound of ["읽는 연결 때문에 다시 시도", "쓰기 잠금을 기다림"] as const) {
+  for (const secondRound of secondRounds) {
     const path = join(makeTempDir(t), "ledger.sqlite");
     createCurrentFileWithoutWal(path);
     const reader = new DatabaseSync(path);
@@ -1201,17 +1216,27 @@ test("WAL로 바꾸는 일을 처음부터 다시 하게 돼도 한 번 여는 �
       blocker.close();
     });
     let round = 0;
-    let commitAttempts = 0;
     let connections = 0;
-    let readerHolds = false;
-    const releaseReader = () => {
-      if (readerHolds) {
-        readerHolds = false;
-        ORIGINAL_EXEC.call(reader, "ROLLBACK");
-      }
+    let journalAttempts = 0;
+    // 테스트가 움직이는 단조 시계. 다시 시도하기 전에 쉬는 만큼만 앞으로 가고, 실제로는 쉬지 않는다.
+    // 그래서 한도를 얼마나 썼는지가 실행 환경의 빠르기와 상관없이 정해진다.
+    const startedAtMs = 5_000;
+    let nowMs = startedAtMs;
+    const spentMs = () => nowMs - startedAtMs;
+    const walTiming = {
+      now: () => nowMs,
+      sleep: (ms: number) => {
+        nowMs += ms;
+      },
     };
+    /** 회차마다, 쓰기 잠금을 잡으려 할 때 SQLite에 넘긴 대기 시간과 그때까지 쓴 한도. */
+    const lockWaits: { busyTimeoutMs: number | undefined; spentMs: number }[] = [];
+    let busyTimeoutMs: number | undefined;
     DatabaseSync.prototype.exec = function (sql) {
-      if (sql === "PRAGMA foreign_keys = ON") {
+      const timeout = /^PRAGMA busy_timeout = (\d+)$/.exec(sql);
+      if (timeout !== null) {
+        busyTimeoutMs = Number(timeout[1]);
+      } else if (sql === "PRAGMA foreign_keys = ON") {
         connections += 1;
         if (connections === 2) {
           // 첫 전환에 성공해 연결을 닫고 다시 여는 사이에, 다른 프로그램이 저널 모드를 되돌린다.
@@ -1222,40 +1247,69 @@ test("WAL로 바꾸는 일을 처음부터 다시 하게 돼도 한 번 여는 �
         }
       } else if (sql === "BEGIN IMMEDIATE") {
         round += 1;
-        commitAttempts = 0;
-        if (round === 1 || secondRound === "읽는 연결 때문에 다시 시도") {
-          // 이 회차가 쓰기 잠금을 잡기 직전에 다른 연결이 읽기 시작한다.
+        lockWaits.push({ busyTimeoutMs, spentMs: spentMs() });
+        if (round === 1) {
+          // 첫 회차는 쓰기 잠금을 기다리느라 한도의 절반을 썼다. 그 뒤로는 막는 것이 없어 WAL로 바꾼다.
+          nowMs += firstRoundMs;
+        } else if (secondRound === "읽는 연결 때문에 커밋을 다시 시도") {
+          // 두 번째 회차가 쓰기 잠금을 잡기 직전에 다른 연결이 읽기 시작해 놓지 않는다.
           ORIGINAL_EXEC.call(reader, "BEGIN; SELECT count(*) FROM requests;");
-          readerHolds = true;
-        }
-      } else if (sql === "COMMIT") {
-        commitAttempts += 1;
-        if (commitAttempts === attemptsUntilReaderLeaves) {
-          releaseReader();
         }
       }
       return ORIGINAL_EXEC.call(this, sql);
     };
-    let elapsedMs = 0;
+    DatabaseSync.prototype.prepare = function (sql, ...rest) {
+      if (sql === "PRAGMA journal_mode = WAL") {
+        journalAttempts += 1;
+        if (round === 2 && secondRound === "저널 모드를 바꾸는 일을 다시 시도") {
+          // 두 번째 회차는 커밋까지 끝냈지만, 마지막에 저널 모드를 바꾸는 일이 잠금 오류로 끝나기를 되풀이한다.
+          throw Object.assign(new Error("테스트가 넣은 잠금 오류"), { errcode: 5 });
+        }
+      }
+      return ORIGINAL_PREPARE.call(this, sql, ...rest);
+    };
     try {
-      const startedAt = performance.now();
       assert.throws(
-        () => openDb(path, { busyTimeoutMs: budgetMs }),
+        () => openDb(path, { busyTimeoutMs: budgetMs, walTiming }),
         (error) => (error as { errcode?: number }).errcode === 5,
         secondRound,
       );
-      elapsedMs = performance.now() - startedAt;
     } finally {
       DatabaseSync.prototype.exec = ORIGINAL_EXEC;
+      DatabaseSync.prototype.prepare = ORIGINAL_PREPARE;
     }
 
     // 첫 회차는 한도 안에 끝나 WAL로 바꿨고, 두 번째 회차에서 남은 한도가 다해 잠금 오류로 끝났다.
     assert.equal(round, 2, secondRound);
     assert.equal(connections, 2, secondRound);
-    // 두 회차가 기다린 시간을 합쳐 한도를 넘지 않는다. 회차마다 한도를 새로 잡았다면 두 번째 회차도 끝까지 기다린다.
-    assert.ok(elapsedMs >= budgetMs - 20, `${secondRound}: ${elapsedMs.toFixed(0)}ms 만에 끝났다`);
-    assert.ok(elapsedMs < budgetMs + 250, `${secondRound}: ${elapsedMs.toFixed(0)}ms가 걸렸다`);
-    releaseReader();
+    // 첫 회차는 한도를 다 받았다. 두 번째 회차가 쓰기 잠금을 기다릴 수 있는 시간은 남은 한도뿐이다.
+    // 회차마다 한도를 새로 잡았거나 쓰기 잠금에 한도 전부를 줬다면 두 번째 값이 한도 전부다.
+    assert.deepEqual(
+      lockWaits,
+      [
+        { busyTimeoutMs: budgetMs, spentMs: 0 },
+        { busyTimeoutMs: budgetMs - firstRoundMs, spentMs: firstRoundMs },
+      ],
+      secondRound,
+    );
+    if (secondRound === "쓰기 잠금을 기다림") {
+      // 쓰기 잠금은 SQLite가 남은 한도만큼 기다리고 끝냈다. 다시 시도하며 더 쉬지 않았다.
+      assert.equal(spentMs(), firstRoundMs, secondRound);
+      assert.equal(journalAttempts, 1, secondRound);
+    } else {
+      // 두 회차가 쓴 시간을 모두 합치면 꼭 한도만큼이다. 커밋이든 저널 모드를 바꾸는 일이든,
+      // 다시 시도하는 쪽이 한도를 새로 잡았다면 그보다 길게 쉰다.
+      assert.equal(spentMs(), budgetMs, secondRound);
+      // 저널 모드를 바꾸는 일은 첫 회차에 한 번 했고, 두 번째 회차에 막혔으면 한도까지 다시 시도했다.
+      assert.equal(
+        journalAttempts > 2,
+        secondRound === "저널 모드를 바꾸는 일을 다시 시도",
+        `${secondRound}: ${journalAttempts}번 시도했다`,
+      );
+    }
+    if (reader.isTransaction) {
+      ORIGINAL_EXEC.call(reader, "ROLLBACK");
+    }
     if (blocker.isTransaction) {
       ORIGINAL_EXEC.call(blocker, "ROLLBACK");
     }

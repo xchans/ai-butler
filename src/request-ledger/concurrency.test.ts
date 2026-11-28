@@ -1,119 +1,24 @@
 // 작업 3(여러 프로세스의 동시 쓰기, S28 앞부분)을 확인한다.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 import type { WriteResult } from "./concurrency-writer.ts";
 import { BUSY_TIMEOUT_MS, openDb } from "./db.ts";
 import { openLedger } from "./index.ts";
 import { MIGRATIONS } from "./migrations.ts";
-import { createCurrentFileWithoutWal, HELD_REQUEST_ID, makeTempDir } from "./test-support.ts";
+import {
+  createCurrentFileWithoutWal,
+  type FinishedWorker,
+  HELD_REQUEST_ID,
+  makeTempDir,
+  startWorker,
+  WORKER_TEST_TIMEOUT_MS,
+} from "./test-support.ts";
 import type { JsonValue } from "./types.ts";
 
-const writerScript = fileURLToPath(new URL("./concurrency-writer.ts", import.meta.url));
-
-/** 자식 프로세스가 신호를 보내지 않고 멈추면 끝없이 기다리게 되므로, 테스트마다 시간 제한을 둔다. */
-const TEST_TIMEOUT_MS = 30_000;
-
-type Finished = {
-  readonly code: number | null;
-  readonly signal: NodeJS.Signals | null;
-  readonly stdout: string;
-  readonly stderr: string;
-};
-
-type Worker = {
-  /** 표준 입력으로 신호 한 줄을 보낸다. */
-  send(line: string): void;
-  /** 표준 출력에 그 줄이 나올 때까지 기다린다. 그 전에 프로세스가 끝나면 바로 실패한다. */
-  waitForLine(line: string): Promise<void>;
-  /** 표준 출력에 그렇게 시작하는 줄이 나올 때까지 기다려 그 줄을 돌려준다. */
-  waitForLineStartingWith(prefix: string): Promise<string>;
-  /** 끝날 때까지 기다려 종료 코드, 신호, 출력을 돌려준다. */
-  finished(): Promise<Finished>;
-  kill(signal?: NodeJS.Signals): void;
-};
-
-function startWorker(args: readonly string[], home: string): Worker {
-  const child = spawn(process.execPath, [writerScript, ...args], {
-    env: { ...process.env, AI_BUTLER_HOME: home },
-  });
-  let stdout = "";
-  let stderr = "";
-  let exit: Pick<Finished, "code" | "signal"> | undefined;
-  // 출력이 더 왔거나 프로세스가 끝났을 때 깨울 것들.
-  const waiters = new Set<() => void>();
-  const wake = (): void => {
-    for (const waiter of [...waiters]) {
-      waiter();
-    }
-  };
-  child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
-    stdout += chunk;
-    wake();
-  });
-  child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
-    stderr += chunk;
-  });
-  // 이미 끝난 프로세스에 신호를 보내도 테스트가 죽지 않게 한다. 끝난 것은 waitForLine과 finished가 알린다.
-  child.stdin.on("error", () => {});
-  // close는 출력이 모두 도착한 뒤에 온다. 정상 종료든 신호로 죽었든 한 번 온다.
-  const closed = new Promise<void>((resolve) => {
-    child.once("close", (code, signal) => {
-      exit = { code, signal };
-      wake();
-      resolve();
-    });
-  });
-  /** 조건에 맞는 줄이 나올 때까지 기다린다. 줄 수신과 프로세스 종료를 함께 기다린다. */
-  const waitForLineWhere = async (
-    matches: (line: string) => boolean,
-    wanted: string,
-  ): Promise<string> => {
-    for (;;) {
-      const found = stdout.split("\n").slice(0, -1).find(matches);
-      if (found !== undefined) {
-        return found;
-      }
-      if (exit !== undefined) {
-        throw new Error(
-          `${wanted}을 찍기 전에 프로세스가 끝났다 (code ${exit.code}, signal ${exit.signal}): ${stderr}`,
-        );
-      }
-      await new Promise<void>((resolve) => {
-        const waiter = (): void => {
-          waiters.delete(waiter);
-          resolve();
-        };
-        waiters.add(waiter);
-      });
-    }
-  };
-
-  return {
-    send(line) {
-      child.stdin.write(`${line}\n`);
-    },
-    async waitForLine(line) {
-      await waitForLineWhere((candidate) => candidate === line, `"${line}"`);
-    },
-    waitForLineStartingWith(prefix) {
-      return waitForLineWhere((candidate) => candidate.startsWith(prefix), `"${prefix}…"`);
-    },
-    async finished() {
-      await closed;
-      return { code: exit?.code ?? null, signal: exit?.signal ?? null, stdout, stderr };
-    },
-    kill(signal) {
-      child.kill(signal);
-    },
-  };
-}
-
 /** 끝난 쓰기 프로세스가 마지막 줄에 찍은 결과를 읽고, 잠금 때문에 실패한 쓰기가 없는지 본다. */
-function assertAllWritten(result: Finished, count: number, label = ""): WriteResult {
+function assertAllWritten(result: FinishedWorker, count: number, label = ""): WriteResult {
   assert.equal(
     result.code,
     0,
@@ -168,7 +73,7 @@ function probeWriteLock(path: string): "busy" | "acquired" {
 }
 
 test("S28: 두 프로세스가 각각 200번씩 쓰면 400건이 모두 저장되고 순번이 빠지거나 겹치지 않는다", {
-  timeout: TEST_TIMEOUT_MS,
+  timeout: WORKER_TEST_TIMEOUT_MS,
 }, async (t) => {
   const home = makeTempDir(t);
   const path = join(home, "ledger.sqlite");
@@ -251,7 +156,7 @@ test("S28: 두 프로세스가 각각 200번씩 쓰면 400건이 모두 저장�
 });
 
 test("원장 파일이 없을 때 여러 프로세스가 동시에 처음 열어도 모두 열리고 쓴다", {
-  timeout: TEST_TIMEOUT_MS,
+  timeout: WORKER_TEST_TIMEOUT_MS,
 }, async (t) => {
   // WAL 모드로 바꾸는 순간이 겹쳐야 드러나는 문제라, 새 파일로 여러 번 되풀이한다.
   const rounds = 8;
@@ -287,7 +192,7 @@ test("원장 파일이 없을 때 여러 프로세스가 동시에 처음 열어
 });
 
 test("S28: 다른 프로세스가 쓰기 잠금을 잡고 있으면 실패하지 않고 기다렸다가 쓴다", {
-  timeout: TEST_TIMEOUT_MS,
+  timeout: WORKER_TEST_TIMEOUT_MS,
 }, async (t) => {
   const home = makeTempDir(t);
   const path = join(home, "ledger.sqlite");
@@ -333,7 +238,7 @@ test("S28: 다른 프로세스가 쓰기 잠금을 잡고 있으면 실패하지
 });
 
 test("WAL로 바꾸려고 다시 시도하는 시간은 잠금이 도중에 바뀌어도 모두 합쳐 busy timeout을 넘지 않는다", {
-  timeout: TEST_TIMEOUT_MS,
+  timeout: WORKER_TEST_TIMEOUT_MS,
 }, async (t) => {
   const home = makeTempDir(t);
   const path = join(home, "ledger.sqlite");
@@ -362,7 +267,7 @@ test("WAL로 바꾸려고 다시 시도하는 시간은 잠금이 도중에 바�
 });
 
 test("S29: 정상인 예전 버전의 파일을 여러 프로세스가 시차를 두고 열어도 모두 열리고, 한 번만 올라간다", {
-  timeout: TEST_TIMEOUT_MS,
+  timeout: WORKER_TEST_TIMEOUT_MS,
 }, async (t) => {
   // 한 프로세스가 올리는 동안 나머지가 버전을 읽고 잠금을 기다리게, 줄을 넉넉히 넣고 조금씩 늦게 시작시킨다.
   const requests = 4000;
@@ -457,7 +362,7 @@ test("S29: 정상인 예전 버전의 파일을 여러 프로세스가 시차를
 });
 
 test("자식 프로세스가 신호로 죽으면 줄을 기다리던 쪽이 바로 실패한다", {
-  timeout: TEST_TIMEOUT_MS,
+  timeout: WORKER_TEST_TIMEOUT_MS,
 }, async (t) => {
   const worker = startWorker(["race", "killed", "1"], makeTempDir(t));
   t.after(() => worker.kill());

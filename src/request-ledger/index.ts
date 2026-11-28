@@ -4,7 +4,15 @@ import { changesSince, type WriteScope, write } from "./changes.ts";
 import { type LedgerDb, openDb, resolveLedgerPath, type SyncResult } from "./db.ts";
 import { LedgerError } from "./errors.ts";
 import { getRequest, type RequestView } from "./get-request.ts";
+import {
+  type PlaceHoldInput,
+  type PlaceHoldResult,
+  placeHold,
+  type ReleaseHoldInput,
+  releaseHold,
+} from "./hold.ts";
 import { type LinkRecordInput, type LinkRecordResult, linkRecord } from "./link.ts";
+import { type ListRequestsFilter, listRequests, type RequestSummary } from "./list.ts";
 import {
   type AttachMaterialInput,
   type AttachMaterialResult,
@@ -36,7 +44,9 @@ import {
   type CreateRequestInput,
   type CreateRequestResult,
   createRequest,
+  type SetOrderInput,
   type SetPriorityInput,
+  setOrder,
   setPriority,
   type UpdateRequestInput,
   updateRequest,
@@ -52,14 +62,17 @@ import {
   type UpdateTaskInput,
   updateTask,
 } from "./task.ts";
+import { type ClearTurnInput, clearTurn, type SetTurnInput, setTurn } from "./turn.ts";
 import type { Actor, AppliesTo, Change, Clock, NewId, Reasoned, WriteAction } from "./types.ts";
 
+export type { TaskDisplay } from "./display.ts";
 export type { LedgerErrorCode } from "./errors.ts";
 export { LedgerError } from "./errors.ts";
 export type {
   CitedRevisionView,
   EvidenceView,
   FinishView,
+  HoldView,
   LinkView,
   MaterialView,
   OpenItemView,
@@ -69,7 +82,9 @@ export type {
   TaskView,
   ValueView,
 } from "./get-request.ts";
+export type { PlaceHoldInput, PlaceHoldResult, ReleaseHoldInput } from "./hold.ts";
 export type { LinkRecordInput, LinkRecordResult, LinkRole } from "./link.ts";
+export type { ListRequestsFilter, RequestSummary, TaskSummary } from "./list.ts";
 export type {
   AttachMaterialInput,
   AttachMaterialResult,
@@ -98,10 +113,12 @@ export type {
   CreateRequestResult,
   PromisedOutcomeInput,
   RequestValuesInput,
+  SetOrderInput,
   SetPriorityInput,
   UpdateRequestInput,
   WriteGrounds,
 } from "./request.ts";
+export type { RequestState } from "./status.ts";
 export type {
   AddTaskInput,
   AddTaskResult,
@@ -112,6 +129,7 @@ export type {
   UpdateTaskInput,
   WaitingForInput,
 } from "./task.ts";
+export type { ClearTurnInput, SetTurnInput, UserTurn } from "./turn.ts";
 export type {
   Actor,
   AppliesTo,
@@ -158,6 +176,8 @@ export type Ledger = {
   updateRequest(actor: Actor, input: Scoped<UpdateRequestInput>): void;
   /** 긴급도와 중요도를 쓰고, 그 사용자 지정을 푼다. */
   setPriority(actor: Actor, input: Scoped<SetPriorityInput>): void;
+  /** 처리 순서를 정하거나 지운다. 사용자만 쓴다. */
+  setOrder(actor: Actor, input: Scoped<SetOrderInput>): void;
   /** 원본을 읽은 내용을 판본으로 더한다. 처음 보는 원본이면 기록도 만든다. */
   addRevision(actor: Actor, input: Scoped<AddRevisionInput>): AddRevisionResult;
   /** 기록을 요청(필요하면 그 요청의 작업)에 연결한다. */
@@ -170,6 +190,14 @@ export type Ledger = {
   completeTask(actor: Actor, input: Scoped<CompleteTaskInput>): void;
   /** 작업을 취소로 표시한다. 비서는 사유를 적어야 한다. */
   cancelTask(actor: Actor, input: Scoped<CancelTaskInput>): void;
+  /** 작업의 차례를 정한다. 사용자만 정한다. 담당과 상태는 그대로다. */
+  setTurn(actor: Actor, input: Scoped<SetTurnInput>): void;
+  /** 사용자가 정한 차례를 지운다. 사용자만 지운다. */
+  clearTurn(actor: Actor, input: Scoped<ClearTurnInput>): void;
+  /** 요청이나 작업에 보류를 건다. 사용자만 건다. */
+  placeHold(actor: Actor, input: Scoped<PlaceHoldInput>): PlaceHoldResult;
+  /** 보류를 푼다. 비서는 재개 조건이 있는 보류만, 건 시각보다 뒤의 판본을 근거로 달아 푼다. */
+  releaseHold(actor: Actor, input: Scoped<ReleaseHoldInput>): void;
   /** 확인할 사항을 남긴다. 비서만 남긴다. */
   raiseOpenItem(actor: Actor, input: Reasoned<RaiseOpenItemInput>): RaiseOpenItemResult;
   /** 확인할 사항에 답해 푼다. 사용자만 답한다. 답에 따라 값을 함께 바꿀 수 있다. */
@@ -189,8 +217,13 @@ export type Ledger = {
   /** 요청의 진척을 쓴다. 비서만 쓴다. */
   setProgress(actor: Actor, input: Reasoned<SetProgressInput>): void;
   /**
-   * 요청 하나를 값, 작업, 연결된 기록과 판본, 확인할 사항, 준비 자료, 변경 이력, 근거로 달린 판본과 함께 돌려준다.
+   * 요청의 목록을 계산한 상태, 차례, 작업별 표시와 함께 정해진 순서로 돌려준다. 내 차례인 것만, 상태별로 거를 수 있다.
    * 한 시점의 내용이다.
+   */
+  listRequests(filter?: ListRequestsFilter): RequestSummary[];
+  /**
+   * 요청 하나를 값, 계산한 상태와 차례, 작업과 표시, 보류, 연결된 기록과 판본, 확인할 사항, 준비 자료, 변경 이력,
+   * 근거로 달린 판본과 함께 돌려준다. 한 시점의 내용이다.
    */
   getRequest(requestId: string): RequestView;
   /** 주어진 순번 뒤의 변경 이력을 돌려준다. 다른 프로세스가 쓴 변경도 나온다. */
@@ -239,12 +272,17 @@ export function openLedger(options: OpenLedgerOptions = {}): Ledger {
     createRequest: writer("createRequest", createRequest),
     updateRequest: writer("updateRequest", updateRequest),
     setPriority: writer("setPriority", setPriority),
+    setOrder: writer("setOrder", setOrder),
     addRevision: writer("addRevision", addRevision),
     linkRecord: writer("linkRecord", linkRecord),
     addTask: writer("addTask", addTask),
     updateTask: writer("updateTask", updateTask),
     completeTask: writer("completeTask", completeTask),
     cancelTask: writer("cancelTask", cancelTask),
+    setTurn: writer("setTurn", setTurn),
+    clearTurn: writer("clearTurn", clearTurn),
+    placeHold: writer("placeHold", placeHold),
+    releaseHold: writer("releaseHold", releaseHold),
     raiseOpenItem: writer("raiseOpenItem", raiseOpenItem),
     resolveOpenItem: writer("resolveOpenItem", resolveOpenItem),
     addNotice: writer("addNotice", addNotice),
@@ -254,6 +292,7 @@ export function openLedger(options: OpenLedgerOptions = {}): Ledger {
     attachMaterial: writer("attachMaterial", attachMaterial),
     replaceMaterial: writer("replaceMaterial", replaceMaterial),
     setProgress: writer("setProgress", setProgress),
+    listRequests: (filter) => listRequests(opened(), filter),
     getRequest: (requestId) => getRequest(opened(), requestId),
     changesSince: (seq) => changesSince(opened(), seq),
     close: () => {

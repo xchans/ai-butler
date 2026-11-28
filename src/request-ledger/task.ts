@@ -14,6 +14,7 @@ import { existingRequest, existingTask } from "./lookup.ts";
 import { anyAfter, hasLaterRevision, isAfter } from "./ordering.ts";
 import { checkedParty, sameParty } from "./party.ts";
 import type { WriteGrounds } from "./request.ts";
+import { readUserTurn, turnReleasedByRevision, type UserTurn, userTurnSnapshot } from "./turn.ts";
 import type { EvidenceRef, JsonValue, Party, SetBy } from "./types.ts";
 
 export const TASK_STATUSES = ["todo", "in_progress", "waiting", "done", "cancelled"] as const;
@@ -391,6 +392,8 @@ function saveTask(
     readonly finish?: FinishState | null;
     /** 사용자가 완료나 취소를 되돌리면서 더한, 그 완료나 취소에 달았던 근거. */
     readonly overruled?: { before: readonly EvidenceRef[]; after: readonly EvidenceRef[] };
+    /** 이 쓰기로 풀리는, 사용자가 정한 차례. 풀리는 것이 없으면 null. */
+    readonly releasedTurn?: UserTurn | null;
   },
   evidence: CheckedEvidence,
 ): void {
@@ -429,6 +432,11 @@ function saveTask(
     columns.push(["overruled_evidence", JSON.stringify(changes.overruled.after)]);
     before.overruledEvidence = changes.overruled.before.map((ref) => ({ ...ref }));
     after.overruledEvidence = changes.overruled.after.map((ref) => ({ ...ref }));
+  }
+  if (changes.releasedTurn !== undefined && changes.releasedTurn !== null) {
+    columns.push(["turn", null], ["turn_set_at", null]);
+    before.turn = userTurnSnapshot(changes.releasedTurn);
+    after.turn = null;
   }
   if (columns.length > 0) {
     scope.run(
@@ -543,6 +551,18 @@ export function updateTask(scope: WriteScope, input: UpdateTaskInput): void {
   }
   const workChanged = work !== undefined && work !== row.work;
   const reverted = reverting && facts.has("status");
+  // 비서가 나중 판본을 근거로 상태, 담당, 대기 대상을 바꾸고 그 판본이 사용자가 차례를 정한 시각보다 뒤이면
+  // 그 차례가 풀린다. 값마다 쓰기 전의 정정 시각과 반영된 근거의 시각으로 나중 판본인지 가린다.
+  // 반영된 근거의 시각만 바뀌었거나 같은 주체의 이름 표기만 바뀐 것은 값을 바꾼 것이 아니다.
+  const changedValues = [...facts]
+    .filter(([name, change]) => !sameFactValue(name, change.before.value, change.after.value))
+    .map(([, change]) => ({
+      correctedAt: change.before.correctedAt,
+      reflectedAt: change.before.evidenceAt,
+    }));
+  const releasedTurn = byUser
+    ? null
+    : turnReleasedByRevision(readUserTurn(row), changedValues, evidence);
   if (facts.size === 0 && !workChanged && dependsOn === undefined) {
     return;
   }
@@ -574,12 +594,16 @@ export function updateTask(scope: WriteScope, input: UpdateTaskInput): void {
       // 완료나 취소를 되돌리면 그때 적어 둔 것을 비운다.
       ...(reverted ? { finish: null } : {}),
       ...(overruled ? { overruled } : {}),
+      releasedTurn,
     },
     evidence,
   );
 }
 
-/** 완료와 취소에 공통인 부분. 끝난 작업에는 대기 대상이 없으므로 함께 비운다. */
+/**
+ * 완료와 취소에 공통인 부분. 끝난 작업에는 대기 대상이 없으므로 함께 비운다.
+ * 작업이 끝나면 사용자가 정한 차례도 풀린다. 누가 어떤 근거로 끝냈든 그렇다.
+ */
 function finishTask(
   scope: WriteScope,
   row: Row,
@@ -613,6 +637,7 @@ function finishTask(
         // 취소한 사유다. 완료에는 적지 않는다.
         reason: status === "cancelled" ? scope.reason : null,
       },
+      releasedTurn: readUserTurn(row),
     },
     evidence,
   );
