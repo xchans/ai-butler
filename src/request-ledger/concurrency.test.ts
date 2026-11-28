@@ -8,7 +8,8 @@ import { fileURLToPath } from "node:url";
 import type { WriteResult } from "./concurrency-writer.ts";
 import { BUSY_TIMEOUT_MS, openDb } from "./db.ts";
 import { openLedger } from "./index.ts";
-import { HELD_REQUEST_ID, makeTempDir } from "./test-support.ts";
+import { MIGRATIONS } from "./migrations.ts";
+import { createCurrentFileWithoutWal, HELD_REQUEST_ID, makeTempDir } from "./test-support.ts";
 import type { JsonValue } from "./types.ts";
 
 const writerScript = fileURLToPath(new URL("./concurrency-writer.ts", import.meta.url));
@@ -126,8 +127,7 @@ function assertAllWritten(result: Finished, count: number, label = ""): WriteRes
 }
 
 function titleOf(after: JsonValue): string {
-  assert.ok(typeof after === "object" && after !== null && !Array.isArray(after));
-  const title = (after as { readonly [key: string]: JsonValue }).title;
+  const title = (after as { title?: { value?: unknown } } | null)?.title?.value;
   assert.equal(typeof title, "string");
   return title as string;
 }
@@ -146,7 +146,25 @@ function committedRequestIds(path: string): string[] {
 }
 
 function isBusyError(error: unknown): boolean {
-  return (error as { errcode?: number } | null)?.errcode === 5;
+  const errcode = (error as { errcode?: unknown } | null)?.errcode;
+  return typeof errcode === "number" && (errcode & 0xff) === 5;
+}
+
+/** 대기 시간 0으로 쓰기 잠금을 시도해 본다. 얻어도 아무것도 쓰지 않고 놓는다. */
+function probeWriteLock(path: string): "busy" | "acquired" {
+  const probe = new DatabaseSync(path, { timeout: 0 });
+  try {
+    probe.exec("BEGIN IMMEDIATE");
+    probe.exec("ROLLBACK");
+    return "acquired";
+  } catch (error) {
+    if (isBusyError(error)) {
+      return "busy";
+    }
+    throw error;
+  } finally {
+    probe.close();
+  }
 }
 
 test("S28: 두 프로세스가 각각 200번씩 쓰면 400건이 모두 저장되고 순번이 빠지거나 겹치지 않는다", {
@@ -273,12 +291,13 @@ test("S28: 다른 프로세스가 쓰기 잠금을 잡고 있으면 실패하지
 }, async (t) => {
   const home = makeTempDir(t);
   const path = join(home, "ledger.sqlite");
-  const holdMs = 600;
-  assert.ok(holdMs < BUSY_TIMEOUT_MS);
+  const lingerMs = 300;
+  assert.ok(lingerMs < BUSY_TIMEOUT_MS);
   openLedger({ path }).close();
 
-  // 잠금을 쥔 프로세스는 요청과 그 변경 이력을 쓰고, 커밋하지 않은 채 holdMs 동안 멈춰 있다.
-  const holder = startWorker(["hold", path, String(holdMs)], home);
+  // 잠금을 쥔 프로세스는 요청과 그 변경 이력을 쓰고, 커밋하지 않은 채 "release"를 기다린다.
+  // 이쪽이 조회를 마쳤다고 알리기 전에는 잠금이 풀리지 않으므로, 여는 일과 조회가 느려도 결과가 같다.
+  const holder = startWorker(["hold", path, String(lingerMs)], home);
   t.after(() => holder.kill());
   await holder.waitForLine("locked");
 
@@ -287,17 +306,20 @@ test("S28: 다른 프로세스가 쓰기 잠금을 잡고 있으면 실패하지
   t.after(() => ledger.close());
   assert.deepEqual(ledger.changesSince(0), []);
   assert.deepEqual(committedRequestIds(path), []);
+  // 쓰기 직전에도 잠금이 실제로 잡혀 있다. 대기 시간 0으로 시도하면 바로 SQLITE_BUSY다.
+  assert.equal(probeWriteLock(path), "busy");
 
+  // 조회를 마쳤다고 알리고 바로 쓴다. 잠금을 쥔 쪽은 신호를 받은 뒤에도 잠깐 더 쥐고 있다가 커밋한다.
+  holder.send("release");
   const startedAt = performance.now();
   const created = ledger.createRequest(
     { kind: "user", via: "skill" },
-    { title: "기다렸다 쓴 요청" },
+    { stated: { title: "기다렸다 쓴 요청" } },
   );
-  const waitedMs = performance.now() - startedAt;
+  // 기다린 시간은 진단에만 쓴다. 느린 환경에서 정상 쓰기를 실패시키지 않도록 이 값으로 판정하지 않는다.
+  t.diagnostic(`쓰기 잠금을 기다린 시간 ${(performance.now() - startedAt).toFixed(0)}ms`);
 
-  // 잠금이 풀릴 때까지 기다렸다. 바로 썼다면 잠금이 걸려 있지 않았던 것이다.
-  assert.ok(waitedMs >= holdMs / 2, `기다린 시간 ${waitedMs.toFixed(0)}ms`);
-  // 커밋된 뒤에는 잠금을 쥐었던 쪽이 쓴 바로 그 요청과 변경 이력이 보이고, 먼저 쓴 쪽이 앞 순번이다.
+  // 잠금 오류 없이 썼고, 잠금을 쥐었던 쪽이 쓴 바로 그 요청과 변경 이력이 앞 순번으로 보인다.
   assert.deepEqual(
     ledger.changesSince(0).map((change) => [change.seq, change.target.id]),
     [
@@ -317,12 +339,13 @@ test("WAL로 바꾸려고 다시 시도하는 시간은 잠금이 도중에 바�
   const path = join(home, "ledger.sqlite");
   const budgetMs = 1000;
   const reservedMs = 600;
+  // 올릴 것이 없는 최신 버전의 파일이라, 여는 쪽은 WAL로 바꾸는 일만 한다.
   // WAL이 아닌 파일에 읽는 연결이 끝까지 붙어 있고, 다른 프로세스의 쓰기 예약은 도중에 풀린다.
   // 예약이 걸린 동안에는 전환이 바로 실패하고, 예약이 풀린 뒤에는 SQLite가 읽는 연결을 기다리려 한다.
+  createCurrentFileWithoutWal(path);
   const reader = new DatabaseSync(path);
   t.after(() => reader.close());
-  reader.exec("CREATE TABLE unrelated (id TEXT);");
-  reader.exec("BEGIN; SELECT count(*) FROM unrelated;");
+  reader.exec("BEGIN; SELECT count(*) FROM requests;");
   const reserver = startWorker(["reserve", path, String(reservedMs)], home);
   t.after(() => reserver.kill());
   await reserver.waitForLine("locked");
@@ -336,6 +359,101 @@ test("WAL로 바꾸려고 다시 시도하는 시간은 잠금이 도중에 바�
   assert.ok(elapsedMs < budgetMs + 250, `${elapsedMs.toFixed(0)}ms가 걸렸다`);
   const reserved = await reserver.finished();
   assert.equal(reserved.code, 0, reserved.stderr);
+});
+
+test("S29: 정상인 예전 버전의 파일을 여러 프로세스가 시차를 두고 열어도 모두 열리고, 한 번만 올라간다", {
+  timeout: TEST_TIMEOUT_MS,
+}, async (t) => {
+  // 한 프로세스가 올리는 동안 나머지가 버전을 읽고 잠금을 기다리게, 줄을 넉넉히 넣고 조금씩 늦게 시작시킨다.
+  const requests = 4000;
+  const processes = 9;
+  const staggerMs = 9;
+  const cases = [
+    { name: "버전 2, WAL 모드", version: 2, wal: true },
+    { name: "버전 2, WAL이 아닌 파일", version: 2, wal: false },
+    { name: "버전 1, WAL 모드", version: 1, wal: true },
+    { name: "버전 1, WAL이 아닌 파일", version: 1, wal: false },
+  ];
+
+  for (const { name, version, wal } of cases) {
+    const home = makeTempDir(t);
+    const path = join(home, "ledger.sqlite");
+    // 예전 버전의 파일을 그 버전의 형태로 고정한 SQL로 만든다. 시각은 밀리초 형태다.
+    const old = new DatabaseSync(path);
+    if (wal) {
+      old.exec("PRAGMA journal_mode = WAL");
+    }
+    old.exec(
+      MIGRATIONS.slice(0, version)
+        .map((migration) => migration.sql)
+        .join("\n"),
+    );
+    const insertChange = old.prepare(
+      `INSERT INTO changes
+         (at, actor, target_kind, target_id, before_value, after_value, evidence)
+       VALUES (?, '{"kind":"user","via":"web"}', 'request', ?, 'null', '{"title":"R"}', '[]')`,
+    );
+    const insertRequest =
+      version >= 2
+        ? old.prepare("INSERT INTO requests (id, title, created_at) VALUES (?, 'R', ?)")
+        : undefined;
+    const millisecondTime = (index: number) => new Date(Date.UTC(2026, 0, 1) + index).toISOString();
+    old.exec("BEGIN");
+    for (let index = 0; index < requests; index += 1) {
+      insertChange.run(millisecondTime(index), `r${index}`);
+      insertRequest?.run(`r${index}`, millisecondTime(index));
+    }
+    old.exec(`COMMIT; PRAGMA user_version = ${version}`);
+    old.close();
+
+    // "race"는 "go"를 받은 뒤에 원장을 연다. 쓰는 횟수는 0이라 여는 일만 한다.
+    const workers = Array.from({ length: processes }, (_, index) =>
+      startWorker(["race", `opener-${index}`, "0"], home),
+    );
+    t.after(() => {
+      for (const worker of workers) {
+        worker.kill();
+      }
+    });
+    await Promise.all(workers.map((worker) => worker.waitForLine("ready")));
+    workers.forEach((worker, index) => {
+      setTimeout(() => worker.send("go"), index * staggerMs);
+    });
+    const results = await Promise.all(workers.map((worker) => worker.finished()));
+
+    // 잘못 거부된 프로세스가 없다.
+    results.forEach((result, index) => {
+      assertAllWritten(result, 0, `${name}, ${index}번째 프로세스: `);
+    });
+    // 한 번만 올라갔다. 시각이 두 번 옮겨지지 않았고 줄도 그대로다.
+    const raw = new DatabaseSync(path, { readOnly: true });
+    try {
+      const moved = (index: number) => `${millisecondTime(index).slice(0, 23)}000Z`;
+      assert.equal(raw.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length, name);
+      assert.equal(raw.prepare("PRAGMA journal_mode").get()?.journal_mode, "wal", name);
+      assert.deepEqual(
+        {
+          ...raw
+            .prepare("SELECT count(*) AS count, min(at) AS first, max(at) AS last FROM changes")
+            .get(),
+        },
+        { count: requests, first: moved(0), last: moved(requests - 1) },
+        name,
+      );
+      assert.equal(
+        raw.prepare("SELECT count(*) AS count FROM changes WHERE length(at) <> 27").get()?.count,
+        0,
+        name,
+      );
+      assert.deepEqual(
+        { ...raw.prepare("SELECT count(*) AS count, max(created_at) AS last FROM requests").get() },
+        version >= 2 ? { count: requests, last: moved(requests - 1) } : { count: 0, last: null },
+        name,
+      );
+    } finally {
+      raw.close();
+    }
+  }
 });
 
 test("자식 프로세스가 신호로 죽으면 줄을 기다리던 쪽이 바로 실패한다", {

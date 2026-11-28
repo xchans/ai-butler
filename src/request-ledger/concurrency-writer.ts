@@ -14,7 +14,8 @@
 //     "ready"를 찍고 "go"를 기다린다. 받은 뒤에 원장을 열어 <횟수>번 등록하고 결과를 찍는다.
 //     원장 파일이 없을 때 여러 프로세스가 동시에 처음 여는 경우를 만든다.
 //   hold <파일> <밀리초>
-//     요청과 변경 이력을 쓰고 커밋하지 않은 채 "locked"를 찍는다. <밀리초> 동안 쥐고 있다가 커밋한다.
+//     요청과 변경 이력을 쓰고 커밋하지 않은 채 "locked"를 찍는다. "release"를 받을 때까지 잠금을 쥐고,
+//     받은 뒤에도 <밀리초> 동안 더 쥐고 있다가 커밋한다. 상대가 잠금을 기다리는 구간을 만들려는 것이다.
 //   reserve <파일> <밀리초>
 //     WAL로 바꾸지 않고 파일을 열어 쓰기를 예약하고 "locked"를 찍는다. <밀리초> 뒤에 예약을 푼다.
 import { readSync, writeSync } from "node:fs";
@@ -22,6 +23,7 @@ import { DatabaseSync } from "node:sqlite";
 import { write } from "./changes.ts";
 import { openDb, resolveLedgerPath } from "./db.ts";
 import { type Ledger, openLedger } from "./index.ts";
+import { createRequest } from "./request.ts";
 import { HELD_REQUEST_ID } from "./test-support.ts";
 
 export type WriteResult = {
@@ -80,7 +82,10 @@ function writeRequests(
   let written = 0;
   for (let index = 1; index <= count; index += 1) {
     try {
-      ledger.createRequest({ kind: "assistant", module: name }, { title: `${name}-${index}` });
+      ledger.createRequest(
+        { kind: "assistant", module: name },
+        { decided: { title: `${name}-${index}` } },
+      );
       written += 1;
     } catch (error) {
       failures.push(String(error));
@@ -165,28 +170,19 @@ function runRace(name: string, count: number): void {
   say(JSON.stringify(result));
 }
 
-function runHold(path: string, holdMs: number): void {
+function runHold(path: string, lingerMs: number): void {
   const db = openDb(path);
   write(
-    db,
+    { db, clock: () => new Date(), newId: () => HELD_REQUEST_ID },
     { kind: "assistant", module: "holder" },
-    () => new Date(),
+    { action: "createRequest" },
     (scope) => {
-      const title = "잠금을 쥔 프로세스의 요청";
-      scope.run(
-        "INSERT INTO requests (id, title, created_at) VALUES (?, ?, ?)",
-        HELD_REQUEST_ID,
-        title,
-        scope.at,
-      );
-      scope.record({
-        target: { kind: "request", id: HELD_REQUEST_ID },
-        before: null,
-        after: { title },
-      });
-      // 값과 변경 이력을 쓴 뒤, 커밋하기 전이다.
+      createRequest(scope, { decided: { title: "잠금을 쥔 프로세스의 요청" } });
+      // 값과 변경 이력을 쓴 뒤, 커밋하기 전이다. 상대가 조회를 마쳤다고 알릴 때까지 잠금을 놓지 않는다.
       say("locked");
-      sleepSync(holdMs);
+      waitFor("release");
+      // 신호를 보낸 상대가 쓰기를 시작해 잠금을 기다리게 될 틈을 준다. 이 시간으로 판정하는 것은 없다.
+      sleepSync(lingerMs);
     },
   );
   db.close();

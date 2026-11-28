@@ -119,7 +119,29 @@ test("공개 계약: 나머지 함수는 openLedger가 돌려준 원장 객체�
   t.after(() => ledger.close());
 
   // 스펙의 공개 계약 표에 있는 이름만 둔다. 작업이 함수를 더하면 이 목록에도 더한다.
-  assert.deepEqual(Object.keys(ledger).sort(), ["changesSince", "close", "createRequest"]);
+  assert.deepEqual(Object.keys(ledger).sort(), [
+    "addNotice",
+    "addRevision",
+    "addTask",
+    "attachMaterial",
+    "cancelTask",
+    "changesSince",
+    "close",
+    "completeTask",
+    "createRequest",
+    "getRequest",
+    "linkRecord",
+    "listNotices",
+    "markNoticeDelivered",
+    "markNoticeSeen",
+    "raiseOpenItem",
+    "replaceMaterial",
+    "resolveOpenItem",
+    "setPriority",
+    "setProgress",
+    "updateRequest",
+    "updateTask",
+  ]);
   for (const method of Object.values(ledger)) {
     assert.equal(typeof method, "function");
   }
@@ -130,7 +152,7 @@ test("공개 계약: 한 프로세스에서 원장을 여럿 열 수 있고 하�
   const second = ledgerModule.openLedger({ path: ":memory:", newId: () => "req-second" });
   t.after(() => second.close());
   const user = { kind: "user", via: "web" } as const;
-  first.createRequest(user, { title: "첫째 원장의 요청" });
+  first.createRequest(user, { stated: { title: "첫째 원장의 요청" } });
 
   // close는 값을 돌려주지 않고, 두 번 닫아도 오류가 아니다.
   assert.equal(first.close(), undefined);
@@ -140,10 +162,18 @@ test("공개 계약: 한 프로세스에서 원장을 여럿 열 수 있고 하�
   const isClosedError = (error: unknown) =>
     error instanceof ledgerModule.LedgerError && error.code === "ledger_closed";
   assert.throws(() => first.changesSince(0), isClosedError);
-  assert.throws(() => first.createRequest(user, { title: "닫은 뒤의 요청" }), isClosedError);
+  assert.throws(
+    () => first.createRequest(user, { stated: { title: "닫은 뒤의 요청" } }),
+    isClosedError,
+  );
+  assert.throws(() => first.getRequest("req-first"), isClosedError);
+  assert.throws(() => first.listNotices(), isClosedError);
 
   // 다른 원장은 그대로 읽고 쓴다. 경로와 id 생성은 원장마다 따로다.
-  assert.equal(second.createRequest(user, { title: "둘째 원장의 요청" }).id, "req-second");
+  assert.equal(
+    second.createRequest(user, { stated: { title: "둘째 원장의 요청" } }).id,
+    "req-second",
+  );
   assert.deepEqual(
     second.changesSince(0).map((change) => change.target.id),
     ["req-second"],
